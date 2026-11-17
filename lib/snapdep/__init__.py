@@ -8,7 +8,11 @@ Modules, in dependency order:
 - ``store``        object store access (interface, error policy, S3/R2 implementation)
 - ``records``      the records under ``_snapdep/v1/`` and how they are read and written
 - ``planner``      the plan of a root build, and loading it in a child build
-- ``fakes``        in-memory git and store for tests
+- ``agent``        the Buildkite agent and the pipeline generator (interfaces, real ones)
+- ``pipeline``     generated pipelines as data: keys, gate, triggers, injection
+- ``annotation``   what the jobs tell people
+- ``jobs``         enter, generate, fail and seal
+- ``fakes``        in-memory git, store, agent and generator for tests
 - ``cli``          ``python -m snapdep <command>``
 """
 

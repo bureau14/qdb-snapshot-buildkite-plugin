@@ -6,7 +6,8 @@ import pytest
 
 from snapdep import cli
 from snapdep.declaration import PATH
-from snapdep.fakes import FakeGit
+from snapdep.fakes import FakeGit, FixedGenerator, MemoryStore, RecordingAgent
+from snapdep.jobs import Effects
 
 DECL = """
 schema: 1
@@ -93,4 +94,47 @@ def test_unknown_command_is_a_usage_error(capsys):
 
 
 def test_commands_are_registered_by_name():
-    assert [c.name for c in cli.COMMANDS] == ["plan"]
+    assert [c.name for c in cli.COMMANDS] == ["plan", "enter", "generate", "fail", "seal"]
+
+
+JOB_ENV = {
+    "BUILDKITE_PIPELINE_SLUG": "qdb-api-rest",
+    "BUILDKITE_BRANCH": "master",
+    "BUILDKITE_REPO": "https://github.com/bureau14/qdb-api-rest.git",
+    "BUILDKITE_BUILD_ID": "uuid-1",
+    "BUILDKITE_BUILD_NUMBER": "3",
+}
+
+
+@pytest.fixture
+def job_effects(checkout, monkeypatch):
+    """Fakes in place of the real store, agent and generator of a job."""
+    agent = RecordingAgent()
+    store = MemoryStore()
+
+    def fake_effects(env, git):
+        return Effects(store, agent, git, FixedGenerator("steps: []\n"), lambda: 0.0, print)
+
+    monkeypatch.setattr(cli, "real_effects", fake_effects)
+    return agent, store
+
+
+def test_enter_runs_the_job_with_the_checkout_declaration(job_effects):
+    agent, _ = job_effects
+    assert cli.main(["enter"], {**JOB_ENV, "SNAPDEP_DISABLE": "1"}) == 0
+    assert agent.meta_data["snapdep-mode"] == "plain"
+    assert agent.uploads[0] == "steps: []\n"
+
+
+def test_fail_and_seal_outside_build_mode_exit_0(job_effects):
+    assert cli.main(["fail"], JOB_ENV) == 0
+    assert cli.main(["seal"], JOB_ENV) == 0
+
+
+def test_job_errors_are_one_line_and_exit_1(job_effects, capsys):
+    agent, _ = job_effects
+    agent.meta_data["snapdep-mode"] = "build"
+    assert cli.main(["generate"], JOB_ENV) == 1
+    assert capsys.readouterr().err.startswith("snapdep generate: meta-data snapdep-plan is not set")
+    assert cli.main(["seal"], {"BUILDKITE_BRANCH": "x"}) == 1
+    assert "BUILDKITE_PIPELINE_SLUG is not set" in capsys.readouterr().err

@@ -73,6 +73,15 @@ def iso_utc(epoch: float) -> str:
     return t.strftime("%Y-%m-%dT%H:%M:%S.") + f"{t.microsecond // 1000:03d}Z"
 
 
+def epoch_from_iso(s: str) -> float:
+    """Epoch seconds of a UTC ISO 8601 time written by ``iso_utc``."""
+    try:
+        t = datetime.datetime.strptime(s, "%Y-%m-%dT%H:%M:%S.%fZ")
+    except ValueError as exc:
+        raise RecordError(f"{s!r}: not a UTC time of the form 2026-01-31T12:00:00.000Z") from exc
+    return t.replace(tzinfo=datetime.timezone.utc).timestamp()
+
+
 # ---------------------------------------------------------------------------
 # Record types
 # ---------------------------------------------------------------------------
