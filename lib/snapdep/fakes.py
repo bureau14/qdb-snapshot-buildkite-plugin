@@ -1,4 +1,6 @@
-"""In-memory ``Git`` and ``Store`` for tests. No network, no subprocess.
+"""In-memory ``Git``, ``Store``, ``Agent`` and ``Generator`` for tests.
+
+No network, no subprocess.
 
 ``MemoryStore`` has the conditional semantics of the real store: a put with
 ``if_none_match`` fails when the key exists, a put with ``if_match`` fails
@@ -108,3 +110,50 @@ class MemoryStore:
             raise ValueError(f"list_children: prefix must end in '/': {prefix!r}")
         rest = (k[len(prefix) :] for k in self.objects if k.startswith(prefix))
         return sorted({r.split("/", 1)[0] for r in rest if "/" in r})
+
+
+class RecordingAgent:
+    """``Agent`` in memory that records what a step command did to its build.
+
+    ``meta_data``: the build meta-data, read and written. ``outcomes``: step key
+    -> outcome; a step that is not listed has the empty outcome (did not run).
+    ``uploads`` and ``annotations`` (``(body, style, context)``) are appended in
+    call order.
+    """
+
+    def __init__(
+        self,
+        meta_data: Mapping[str, str] | None = None,
+        outcomes: Mapping[str, str] | None = None,
+    ) -> None:
+        self.meta_data = dict(meta_data or {})
+        self.outcomes = dict(outcomes or {})
+        self.uploads: list[str] = []
+        self.annotations: list[tuple[str, str, str]] = []
+
+    def meta_data_get(self, key: str) -> str | None:
+        return self.meta_data.get(key)
+
+    def meta_data_set(self, key: str, value: str) -> None:
+        self.meta_data[key] = value
+
+    def step_outcome(self, key: str) -> str:
+        return self.outcomes.get(key, "")
+
+    def pipeline_upload(self, document: str) -> None:
+        self.uploads.append(document)
+
+    def annotate(self, body: str, style: str, context: str) -> None:
+        self.annotations.append((body, style, context))
+
+
+class FixedGenerator:
+    """``Generator`` that prints ``output`` for any command; ``commands`` records the calls."""
+
+    def __init__(self, output: str) -> None:
+        self.output = output
+        self.commands: list[str] = []
+
+    def run(self, command: str) -> str:
+        self.commands.append(command)
+        return self.output
