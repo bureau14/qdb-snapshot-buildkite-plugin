@@ -40,6 +40,7 @@ REPOS = {
 }
 EDGES = {PYTHON: (REST, QDB), REST: (DUCK, QDB), DUCK: (QDB,), QDB: ()}
 PLAN_ID = "01aaaaaa-root-build"
+OTHER_PLAN_ID = "01bbbbbb-other-root-build"  # the plan of another chain
 T0 = 1_763_380_800.0
 PLUGIN_COMMIT = "c0ffee" + "0" * 34
 PLUGINS = json.dumps(
@@ -109,7 +110,16 @@ def objects(p: Plan, versions: Iterable[Version] = ()) -> Mapping[str, bytes]:
     return out
 
 
-def failed(project: str, k: str, b: BuildRef, steps: Mapping[str, str], causes=(), at=T0 + 20):
+def failed(
+    project: str,
+    k: str,
+    b: BuildRef,
+    steps: Mapping[str, str],
+    causes=(),
+    at=T0 + 20,
+    plan_id: str | None = OTHER_PLAN_ID,
+):
+    """A failure of build ``b``; by default under the plan of another chain."""
     return failure_record(
-        project, k, b, [FailedStep(s, o) for s, o in steps.items()], list(causes), at
+        project, k, plan_id, b, [FailedStep(s, o) for s, o in steps.items()], list(causes), at
     )

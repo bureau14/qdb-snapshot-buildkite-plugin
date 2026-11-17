@@ -615,7 +615,7 @@ def test_generate_fails_when_a_dependency_has_no_version():
         decode(w.store.get(failure_path(REST, key(REST), REST_BUILD.uuid)).body, "f")
     )
     assert [(c.project, c.key) for c in f.caused_by] == [(DUCK, key(DUCK))]
-    assert f.failed_steps == ()
+    assert f.failed_steps == () and f.plan == PLAN_ID
     body, style, context = w.agent.annotations[-1]
     assert (style, context) == ("error", "snapdep")
     assert "FAILED in build 31: https://ci/qdb-duck/31" in body
@@ -658,6 +658,7 @@ def test_fail_records_a_step_that_did_not_pass(outcome):
     [f] = list_failures(w.store, REST, key(REST))
     assert [(s.key, s.outcome) for s in f.failed_steps] == [("build", outcome)]
     assert f.build == REST_BUILD and f.recorded_at == NOW
+    assert f.plan == PLAN_ID, "the plan of the build, from its meta-data"
     body, style, _ = w.agent.annotations[-1]
     assert style == "error" and f"step build: {outcome or 'did not run'}" in body
 
@@ -772,6 +773,7 @@ def test_seal_checks_produced_variants():
         run(seal, w, decl)
     assert sealed(w) is None
     (f,) = list_failures(w.store, REST, key(REST))
+    assert f.plan == PLAN_ID
     assert [(s.key, s.outcome) for s in f.failed_steps] == [
         ("variant linux-haswell-release", "no manifest")
     ]

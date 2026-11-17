@@ -80,12 +80,34 @@ def test_round_trips():
     assert v.store_ref == "refs/heads/sc-1"
     assert version_from_dict(version_to_dict(v)) == v
     f = failure_record(
-        "qdb-api-rest", "v1-k", build(), [FailedStep("t", "hard_failed")], [Cause("d", "k")], T0
+        "qdb-api-rest",
+        "v1-k",
+        "root-uuid",
+        build(),
+        [FailedStep("t", "hard_failed")],
+        [Cause("d", "k")],
+        T0,
     )
     assert f.recorded_at == 1_763_380_800.25 and f.recorded_at_iso == iso_utc(T0)
     assert failure_from_dict(failure_to_dict(f)) == f
     h = holder_record("qdb-api-rest", "v1-k", "root-uuid", build(), T0)
     assert holder_from_dict(holder_to_dict(h)) == h
+
+
+def test_failure_record_names_its_plan():
+    f = failure_record("p", "v1-k", "root-uuid", build(), [], [Cause("d", "k")], T0)
+    d = json.loads(json.dumps(failure_to_dict(f)))
+    assert d["plan"] == "root-uuid"
+    assert failure_from_dict(d).plan == "root-uuid"
+
+
+def test_failure_record_without_a_plan_stays_readable():
+    # A record written before the field existed.
+    old = failure_to_dict(failure_record("p", "v1-k", "root-uuid", build(), [], [], T0))
+    del old["plan"]
+    f = failure_from_dict(json.loads(json.dumps(old)))
+    assert f.plan is None and f.build == build()
+    assert failure_to_dict(f) == old, "rewritten unchanged: no plan field is invented"
 
 
 def test_plan_record_shape():
@@ -141,9 +163,9 @@ def test_failed_lookup_is_not_no_record():
 
 def test_failures_listed_oldest_first():
     s = MemoryStore()
-    late = failure_record("p", "v1-k", build("u-2"), [], [], T0 + 10)
-    early = failure_record("p", "v1-k", build("u-1"), [FailedStep("x", "failed")], [], T0)
-    other = failure_record("p", "v1-other", build("u-3"), [], [], T0)
+    late = failure_record("p", "v1-k", "plan", build("u-2"), [], [], T0 + 10)
+    early = failure_record("p", "v1-k", "plan", build("u-1"), [FailedStep("x", "failed")], [], T0)
+    other = failure_record("p", "v1-other", "plan", build("u-3"), [], [], T0)
     for f in (late, early, other):
         write_failure(s, f)
     assert list_failures(s, "p", "v1-k") == [early, late]
@@ -152,13 +174,14 @@ def test_failures_listed_oldest_first():
 
 def test_a_rewritten_failure_keeps_its_first_time():
     s = MemoryStore()
-    write_failure(s, failure_record("p", "v1-k", build(), [FailedStep("x", "failed")], [], T0))
-    again = failure_record("p", "v1-k", build(), [FailedStep("y", "failed")], [], T0 + 300)
+    first_try = failure_record("p", "v1-k", "plan", build(), [FailedStep("x", "failed")], [], T0)
+    write_failure(s, first_try)
+    again = failure_record("p", "v1-k", "plan", build(), [FailedStep("y", "failed")], [], T0 + 300)
     write_failure(s, again)
     (stored,) = list_failures(s, "p", "v1-k")
     assert stored.failed_steps == (FailedStep("y", "failed"),)
     assert stored.recorded_at == T0
-    first = failure_record("p", "v1-k", build(), [], [], T0)
+    first = failure_record("p", "v1-k", "plan", build(), [], [], T0)
     assert stored.recorded_at_iso == first.recorded_at_iso
 
 

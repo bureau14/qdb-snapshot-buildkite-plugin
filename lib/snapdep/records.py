@@ -3,6 +3,8 @@
 Specification section 4. Every record is JSON with ``"schema": 1``. Records are
 built with the typed constructors here, encoded with ``encode`` and decoded
 with the ``*_from_dict`` readers, which reject records that miss a field.
+One field is optional: ``plan`` of a failure record (the plan its build ran
+under), absent in records written before it existed.
 
 Layout (keys relative to the store root, see ``snapdep.store``)::
 
@@ -170,12 +172,16 @@ class Cause:
 class Failure:
     """A build of a key that did not become a version.
 
+    ``plan``: the id of the plan the build ran under (its meta-data
+    ``snapdep-plan``); None in a record written before the field existed.
+    Within one plan a key is built at most once (``snapdep.jobs``).
     ``recorded_at`` is UTC epoch seconds, ``recorded_at_iso`` the same instant
     as ISO 8601.
     """
 
     project: str
     key: str
+    plan: str | None
     build: BuildRef
     failed_steps: tuple[FailedStep, ...]
     caused_by: tuple[Cause, ...]
@@ -229,14 +235,17 @@ def version_record(
 def failure_record(
     project: str,
     key: str,
+    plan_id: str | None,
     b: BuildRef,
     failed_steps: list[FailedStep],
     caused_by: list[Cause],
     now: float,
 ) -> Failure:
+    """The failure of build ``b`` of ``key``, which ran under plan ``plan_id``."""
     return Failure(
         project=project,
         key=key,
+        plan=plan_id,
         build=b,
         failed_steps=tuple(failed_steps),
         caused_by=tuple(caused_by),
@@ -372,10 +381,13 @@ def version_from_dict(d: Any, where: str = "version") -> Version:
 
 
 def failure_to_dict(f: Failure) -> dict[str, Any]:
+    """The record of ``f``; without ``plan`` when ``f`` has none (an old record, rewritten)."""
+    plan = {} if f.plan is None else {"plan": f.plan}
     return {
         "schema": SCHEMA,
         "project": f.project,
         "key": f.key,
+        **plan,
         "build": build_to_dict(f.build),
         "failed_steps": [{"key": s.key, "outcome": s.outcome} for s in f.failed_steps],
         "caused_by": [{"project": c.project, "key": c.key} for c in f.caused_by],
@@ -385,12 +397,14 @@ def failure_to_dict(f: Failure) -> dict[str, Any]:
 
 
 def failure_from_dict(d: Any, where: str = "failure") -> Failure:
+    """The failure in record ``d``. ``plan`` is optional: records before it have none."""
     d = _check_schema(d, where)
     steps = _field(d, "failed_steps", where)
     causes = _field(d, "caused_by", where)
     return Failure(
         project=_field(d, "project", where),
         key=_field(d, "key", where),
+        plan=d.get("plan"),
         build=build_from_dict(_field(d, "build", where), f"{where}.build"),
         failed_steps=tuple(
             FailedStep(_field(s, "key", where), _field(s, "outcome", where)) for s in steps

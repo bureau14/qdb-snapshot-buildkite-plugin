@@ -626,7 +626,7 @@ def generate(job: Job, read: DeclarationSource, fx: Effects) -> int:
     missing = stale_dependencies(plan, job.project, versions)
     if missing:
         causes = [Cause(d, plan.nodes[d].key) for d in missing]
-        f = failure_record(job.project, own.key, job.build, [], causes, fx.clock())
+        f = failure_record(job.project, own.key, plan.id, job.build, [], causes, fx.clock())
         write_failure(fx.store, f)
         traced = [notes.trace_missing(fx.store, plan, c) for c in causes]
         text = notes.dependency_failure_text(job.project, job.build.number, traced)
@@ -662,7 +662,8 @@ def fail(job: Job, read: DeclarationSource, fx: Effects) -> int:
     if v is not None and v.build.uuid == job.build.uuid:
         fx.log(f"this build is already the version of {key}: nothing to record")
         return 0
-    f = failure_record(job.project, key, job.build, failed, [], fx.clock())
+    plan_id = fx.agent.meta_data_get(PLAN) or None
+    f = failure_record(job.project, key, plan_id, job.build, failed, [], fx.clock())
     write_failure(fx.store, f)
     fx.agent.annotate(
         notes.preformatted(notes.failed_steps_text(job.project, key, f)), "error", notes.CONTEXT
@@ -706,7 +707,7 @@ def seal(job: Job, read: DeclarationSource, fx: Effects) -> int:
     absent = missing_variants(fx.store, job, own.label, entry.produces)
     if absent:
         missing = [FailedStep(f"variant {a}", NO_MANIFEST) for a in absent]
-        f = failure_record(job.project, key, job.build, missing, [], fx.clock())
+        f = failure_record(job.project, key, plan.id, job.build, missing, [], fx.clock())
         write_failure(fx.store, f)
         fx.agent.annotate(
             notes.preformatted(notes.failed_steps_text(job.project, key, f)), "error", notes.CONTEXT
