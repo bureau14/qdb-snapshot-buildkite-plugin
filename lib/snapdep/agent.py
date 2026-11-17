@@ -82,8 +82,12 @@ def run_process(args: Sequence[str], stdin: str | None) -> Outcome:
     """Run ``args`` with ``stdin`` as input; never raises on exit status.
 
     Standard error is captured, so that a failure can be reported in one line.
+    A command that cannot be started exits 127, as in a shell.
     """
-    p = subprocess.run(list(args), input=stdin, capture_output=True, text=True, check=False)
+    try:
+        p = subprocess.run(list(args), input=stdin, capture_output=True, text=True, check=False)
+    except OSError as exc:
+        return Outcome(127, "", str(exc))
     return Outcome(p.returncode, p.stdout, p.stderr)
 
 

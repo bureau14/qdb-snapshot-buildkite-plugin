@@ -73,6 +73,11 @@ def test_upload_failure_raises():
         RealAgent(Script(Outcome(2, "", "bad"))).pipeline_upload("x")
 
 
+def test_a_missing_agent_binary_is_an_agent_error():
+    with pytest.raises(AgentError, match="failed \\(127\\)"):
+        RealAgent(binary="/nonexistent/buildkite-agent").meta_data_get("k")
+
+
 def test_annotate_rejects_unknown_style():
     with pytest.raises(ValueError):
         RealAgent(Script()).annotate("x", "loud", "c")
