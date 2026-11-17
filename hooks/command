@@ -5,11 +5,14 @@
 # (lib/requirements.txt), then runs the step given by the plugin option
 # `step` in the build's checkout. Linux only: the gate jobs run on the
 # default queue.
+#
+# Sourcing this file defines its functions without running main (tests).
 set -euo pipefail
 
 PLUGIN_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 VENV_DIR="${PLUGIN_DIR}/.venv"
-READY="${VENV_DIR}/.snapdep-ready"
+READY_MARK=".snapdep-ready"
+READY="${VENV_DIR}/${READY_MARK}"
 REQUIREMENTS="${PLUGIN_DIR}/lib/requirements.txt"
 STEP="${BUILDKITE_PLUGIN_QDB_SNAPSHOT_STEP:-}"
 
@@ -18,20 +21,40 @@ fail() {
   exit 1
 }
 
+# True when $1 is a Python interpreter of version 3.9 or later.
+is_python39() {
+  local check="import sys; sys.exit(0 if sys.version_info >= (3, 9) else 1)"
+  "$1" -c "${check}" &>/dev/null
+}
+
 # Python 3.9 or later, found the way the qdb-artifacts plugin finds python3:
 # the agent's QDB_CICD_AGENT_PYTHON3 first, then python3 or python on PATH.
 find_python3() {
-  local check="import sys; sys.exit(0 if sys.version_info >= (3, 9) else 1)"
-  if [[ -n "${QDB_CICD_AGENT_PYTHON3:-}" ]] && [[ -x "${QDB_CICD_AGENT_PYTHON3}" ]]; then
-    echo "${QDB_CICD_AGENT_PYTHON3}"
-    return
-  fi
-  for cmd in python3 python; do
-    if command -v "${cmd}" &>/dev/null && "${cmd}" -c "${check}" 2>/dev/null; then
+  local cmd
+  for cmd in "${QDB_CICD_AGENT_PYTHON3:-}" python3 python; do
+    if [[ -n "${cmd}" ]] && command -v "${cmd}" &>/dev/null && is_python39 "${cmd}"; then
       echo "${cmd}"
       return
     fi
   done
+}
+
+# A complete virtualenv in directory $2, made with interpreter $1.
+build_venv() {
+  "$1" -m venv "$2"
+  "$2/bin/python" -m pip install --quiet --retries 3 -r "${REQUIREMENTS}"
+  touch "$2/${READY_MARK}"
+}
+
+# Move the complete virtualenv $2 to VENV_DIR in one rename. A rename onto
+# a virtualenv another job moved there first fails; that one is used, and $2
+# (this job's own directory) is removed. An existing VENV_DIR is never removed.
+place_venv() {
+  local rename="import os, sys; os.rename(sys.argv[1], sys.argv[2])"
+  if ! "$1" -c "${rename}" "$2" "${VENV_DIR}" 2>/dev/null; then
+    rm -rf "$2"
+  fi
+  [[ -f "${READY}" ]] || fail "${VENV_DIR} exists but is not a complete virtualenv; remove it"
 }
 
 # Build the virtualenv next to the final place and move it in, so that two
@@ -39,15 +62,11 @@ find_python3() {
 ensure_venv() {
   local python3="$1"
   [[ -f "${READY}" ]] && return
-  [[ -d "${VENV_DIR}" ]] && rm -rf "${VENV_DIR}"
   local tmp
   tmp="$(mktemp -d "${PLUGIN_DIR}/.venv-XXXXXX")"
   echo "~~~ :python: Setting up the qdb-snapshot plugin"
-  "${python3}" -m venv "${tmp}"
-  "${tmp}/bin/python" -m pip install --quiet --retries 3 -r "${REQUIREMENTS}"
-  touch "${tmp}/.snapdep-ready"
-  mv -T "${tmp}" "${VENV_DIR}" 2>/dev/null || rm -rf "${tmp}"
-  [[ -f "${READY}" ]] || fail "could not set up ${VENV_DIR}"
+  build_venv "${python3}" "${tmp}"
+  place_venv "${python3}" "${tmp}"
 }
 
 main() {
@@ -66,4 +85,6 @@ main() {
     exec "${VENV_DIR}/bin/python" -m snapdep "${STEP}"
 }
 
-main
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+  main
+fi
