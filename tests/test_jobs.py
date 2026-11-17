@@ -506,6 +506,14 @@ def test_enter_root_makes_the_plan_once_and_triggers():
     assert trigger["build"]["message"] == "snapshot dependency of qdb-api-rest build 77"
 
 
+def test_enter_sets_build_mode_after_key_and_plan():
+    p = plan()
+    w = World(store=stored_versions(version(p, DUCK, 5), version(p, QDB, 9)))
+    assert run(enter, w) == 0
+    written = list(w.agent.meta_data)
+    assert written.index(KEY) < written.index(MODE) and written.index(PLAN) < written.index(MODE)
+
+
 def test_retried_root_enter_loads_the_stored_plan_without_resolving():
     w = root_world()
     assert run(enter, w, SNAPDEP_PLAN=None) == 0

@@ -554,9 +554,9 @@ def enter(job: Job, read: DeclarationSource, fx: Effects) -> int:
 
     plugin = own_plugin_reference(job.plugins) if stale else ""
     write_holder(fx.store, holder_record(job.project, own.key, plan.id, job.build, fx.clock()))
-    fx.agent.meta_data_set(MODE, BUILD)
     fx.agent.meta_data_set(KEY, own.key)
     fx.agent.meta_data_set(PLAN, plan.id)
+    fx.agent.meta_data_set(MODE, BUILD)  # last: fail and seal read key and plan in build mode
 
     if stale:
         triggers = trigger_steps(plan, job.project, stale)
