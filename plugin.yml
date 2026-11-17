@@ -1,0 +1,14 @@
+name: QuasarDB Snapshot
+description: Build a pipeline against one fixed snapshot of its dependency pipelines, reusing builds by version key
+author: https://github.com/bureau14
+requirements:
+  - python3
+configuration:
+  properties:
+    step:
+      type: string
+      enum: [enter, generate, fail, seal]
+      description: "Which job of the snapshot gate this is"
+  required:
+    - step
+  additionalProperties: false
