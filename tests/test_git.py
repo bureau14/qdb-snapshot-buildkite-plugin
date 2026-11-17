@@ -111,17 +111,62 @@ def test_real_read_file_absent_and_present():
     assert fetches[0][-5:] == ("--depth", "1", "--filter=blob:none", "origin", A)
 
 
-def test_real_release_line_from_merge_base_times():
+def release_line_git(fetch_fails=(), unreachable=False, unrelated=(), logs=None):
+    """A ``RealGit`` over a remote whose lines master and 3.14.x exist.
+
+    ``fetch_fails``: lines whose fetch fails. ``unreachable``: ls-remote fails
+    too (the remote cannot be reached). ``unrelated``: lines without a common
+    ancestor with HEAD. Merge-base times: master 100, 3.14.x 200.
+    """
+    times = {A: "100", B: "200"}
+    tips = {"refs/heads/master": A, "refs/heads/3.14.x": B}
+    state = {}
+
     def run(args, cwd):
         words = tuple(args[1:])
         if words[0] == "fetch":
-            return Completed(0 if words[-1] != "refs/heads/gone" else 1, "", "")
+            line = words[-1][len("refs/heads/") :]
+            if line in fetch_fails:
+                return Completed(128, "", "fatal: unable to access: 502")
+            if words[-1] not in tips:
+                return Completed(128, "", f"fatal: couldn't find remote ref {words[-1]}")
+            state["fetched"] = line
+            return Completed(0, "", "")
+        if words[0] == "ls-remote":
+            if unreachable:
+                return Completed(128, "", "fatal: unable to access: 502")
+            tip = tips.get(words[-1])
+            return Completed(0, f"{tip}\t{words[-1]}\n" if tip else "", "")
         if words[0] == "merge-base":
-            return Completed(0, A + "\n", "")
+            if state["fetched"] in unrelated:
+                return Completed(1, "", "")
+            return Completed(0, tips[f"refs/heads/{state['fetched']}"] + "\n", "")
         if words[0] == "show":
-            return Completed(0, "1700000000\n", "")
+            return Completed(0, times[words[-1]] + "\n", "")
         return Completed(0, "", "")
 
-    g = RealGit(run=run)
+    return RealGit(run=run, log=(logs.append if logs is not None else lambda m: None))
+
+
+def test_real_release_line_from_merge_base_times():
+    logs = []
+    g = release_line_git(logs=logs)
     assert g.release_line("o/r", "3.14.x", ["master", "3.14.x"]) == "3.14.x"
+    assert g.release_line("o/r", "feature", ["master", "3.14.x"]) == "3.14.x"
+    assert logs == ["release line of feature: 3.14.x (merge-base times: master 100, 3.14.x 200)"]
+
+
+def test_real_release_line_skips_a_line_that_does_not_exist_or_is_unrelated():
+    g = release_line_git()
     assert g.release_line("o/r", "feature", ["gone", "master"]) == "master"
+    g = release_line_git(unrelated=("3.14.x",))
+    assert g.release_line("o/r", "feature", ["3.14.x", "master"]) == "master"
+
+
+def test_real_release_line_raises_when_an_existing_line_cannot_be_fetched():
+    with pytest.raises(GitError, match="502"):
+        release_line_git(fetch_fails=("3.14.x",)).release_line("o/r", "f", ["master", "3.14.x"])
+    with pytest.raises(GitError, match="502"):
+        release_line_git(fetch_fails=("3.14.x",), unreachable=True).release_line(
+            "o/r", "f", ["master", "3.14.x"]
+        )

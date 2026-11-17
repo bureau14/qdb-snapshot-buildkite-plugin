@@ -63,6 +63,10 @@ class UsageError(RuntimeError):
     """The command was called without something it needs."""
 
 
+def log_stderr(msg: str) -> None:
+    print(f"[snapdep] {msg}", file=sys.stderr)
+
+
 # ---------------------------------------------------------------------------
 # plan
 # ---------------------------------------------------------------------------
@@ -125,7 +129,7 @@ def run_plan(args: argparse.Namespace, env: Env) -> int:
     decl = read_declaration(args.declaration)
     if decl is None:
         raise UsageError(f"{args.declaration}: not found; this checkout is not snapshot-managed")
-    with RealGit() as git:
+    with RealGit(log=log_stderr) as git:
         root = root_from(args, env, git)
         store = LazyStore(lambda: open_store(env))
         plan = make_plan(root, decl, git, store, args.rebuild_all, time.time())
@@ -138,10 +142,6 @@ PLAN = Command("plan", "compute the plan of the current checkout", configure_pla
 # ---------------------------------------------------------------------------
 # The jobs: enter, generate, fail, seal
 # ---------------------------------------------------------------------------
-
-
-def log_stderr(msg: str) -> None:
-    print(f"[snapdep] {msg}", file=sys.stderr)
 
 
 def real_effects(env: Env, git: Git) -> Effects:
@@ -166,7 +166,7 @@ def job_command(name: str, help: str, job: Callable[[Job, Declaration | None, Ef
     def run(args: argparse.Namespace, env: Env) -> int:
         j = job_from_env(env)
         decl = read_declaration(args.declaration)
-        with RealGit() as git:
+        with RealGit(log=log_stderr) as git:
             return job(j, decl, real_effects(env, git))
 
     return Command(name, help, configure_job, run)

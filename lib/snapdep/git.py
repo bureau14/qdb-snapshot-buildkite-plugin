@@ -137,6 +137,14 @@ def _checked(c: Completed, args: Sequence[str]) -> str:
     return c.stdout
 
 
+# ``git merge-base`` exits with this status when the commits have no common ancestor.
+MERGE_BASE_NONE = 1
+
+
+def _ignore(msg: str) -> None:
+    pass
+
+
 # ---------------------------------------------------------------------------
 # The real implementation
 # ---------------------------------------------------------------------------
@@ -148,12 +156,16 @@ class RealGit:
     ``cwd`` is the checkout of the current build. Files of other repositories
     are fetched into scratch repositories under a temporary directory, one per
     repository, removed by ``close()`` (or by using the object as a context
-    manager). ``run`` executes one command; tests may replace it.
+    manager). ``run`` executes one command; tests may replace it. ``log``
+    receives the choice of a release line and what it was based on.
     """
 
-    def __init__(self, cwd: str = ".", run: Runner = run_command) -> None:
+    def __init__(
+        self, cwd: str = ".", run: Runner = run_command, log: Callable[[str], None] = _ignore
+    ) -> None:
         self._cwd = cwd
         self._run = run
+        self._log = log
         self._scratch: str | None = None
         self._repos: dict[str, str] = {}
 
@@ -220,24 +232,39 @@ class RealGit:
         return github_repo(c.stdout) if c.returncode == 0 else None
 
     def _merge_base_time(self, repo: str, line: str) -> int | None:
+        """Committer time of the merge-base of HEAD and ``line``; None when there is none.
+
+        None when the line does not exist in ``repo`` or has no common
+        ancestor with HEAD. Any other failure (network, authentication, a
+        server error) raises ``GitError``: it is not an answer.
+        """
         fetch = ["fetch", "-q", "--no-tags", repo_url(repo), branch_ref(line)]
-        if self._git(fetch).returncode != 0:
+        fetched = self._git(fetch)
+        if fetched.returncode != 0:
+            if self.head(repo, line) is None:
+                return None
+            _checked(fetched, fetch)
+        merge_base = ["merge-base", "HEAD", "FETCH_HEAD"]
+        base = self._git(merge_base)
+        if base.returncode == MERGE_BASE_NONE:
             return None
-        base = self._git(["merge-base", "HEAD", "FETCH_HEAD"])
-        if base.returncode != 0 or not base.stdout.strip():
-            return None
-        t = self._git(["show", "-s", "--format=%ct", base.stdout.strip()])
-        return int(t.stdout.strip()) if t.returncode == 0 and t.stdout.strip() else None
+        sha = _checked(base, merge_base).strip()
+        show = ["show", "-s", "--format=%ct", sha]
+        return int(_checked(self._git(show), show).strip())
 
     def release_line(self, repo: str, branch: str, lines: Sequence[str]) -> str:
         """The release line of ``branch`` in the checkout of ``repo``.
 
         Fetches each line from ``repo`` (into FETCH_HEAD only, no local ref is
         written) and compares merge-bases with HEAD; see ``choose_release_line``.
-        A line that cannot be fetched or has no merge-base (for example in a
-        shallow checkout) is skipped; ``master`` when none is left.
+        A line that does not exist or has no merge-base (for example in a
+        shallow checkout) is skipped; ``master`` when none is left. A fetch
+        that fails for another reason raises ``GitError``.
         """
         if branch in lines:
             return branch
         times = {line: self._merge_base_time(repo, line) for line in lines}
-        return choose_release_line(branch, lines, times)
+        chosen = choose_release_line(branch, lines, times)
+        shown = ", ".join(f"{line} {t if t is not None else 'none'}" for line, t in times.items())
+        self._log(f"release line of {branch}: {chosen} (merge-base times: {shown})")
+        return chosen
