@@ -208,7 +208,7 @@ def test_generate_step():
     assert s == {
         "label": ":camera_with_flash: snapshot generate",
         "key": GENERATE,
-        "depends_on": ["snapdep-dep-x"],
+        "depends_on": [{"step": "snapdep-dep-x", "allow_failure": True}],
         "plugins": [{"bureau14/qdb-snapshot#abc": {"step": "generate"}}],
     }
 

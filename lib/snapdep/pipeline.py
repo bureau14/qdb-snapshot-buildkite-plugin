@@ -286,10 +286,14 @@ def trigger_steps(p: Plan, project: str, stale: Collection[str]) -> list[dict[st
 
 
 def generate_step(plugin_reference: str, trigger_keys: Sequence[str]) -> dict[str, Any]:
-    """The step that generates the pipeline once the triggers have run."""
+    """The step that generates the pipeline once the triggers have run.
+
+    It runs however the triggers ended (``allow_failure``, the measured form):
+    it is generate that turns a dependency without a version into a failure.
+    """
     s: dict[str, Any] = {"label": ":camera_with_flash: snapshot generate", "key": GENERATE}
     if trigger_keys:
-        s["depends_on"] = list(trigger_keys)
+        s["depends_on"] = [{"step": k, "allow_failure": True} for k in trigger_keys]
     s["plugins"] = [{plugin_reference: {"step": "generate"}}]
     return s
 

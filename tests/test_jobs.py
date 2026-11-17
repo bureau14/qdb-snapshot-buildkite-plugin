@@ -406,7 +406,10 @@ def test_enter_with_stale_dependencies_uploads_triggers_and_generate():
     qdb, duck, gen = doc["steps"]
     assert "depends_on" not in qdb
     assert duck["depends_on"] == ["snapdep-dep-quasardb-build"]
-    assert gen["depends_on"] == ["snapdep-dep-quasardb-build", "snapdep-dep-qdb-duck"]
+    assert gen["depends_on"] == [
+        {"step": "snapdep-dep-quasardb-build", "allow_failure": True},
+        {"step": "snapdep-dep-qdb-duck", "allow_failure": True},
+    ]
     assert gen["plugins"] == [{f"bureau14/qdb-snapshot#{PLUGIN_COMMIT}": {"step": "generate"}}]
     assert duck["build"]["env"] == {"SNAPDEP_PLAN": PLAN_ID}
     assert GATE_KEYS not in w.agent.meta_data
