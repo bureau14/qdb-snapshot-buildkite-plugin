@@ -148,8 +148,17 @@ def test_sentinel_with_and_without_gates():
         "label": ":camera_with_flash: snapshot built",
         "key": BUILT,
         "command": "true",
+        "retry": {"automatic": [{"exit_status": "*", "limit": 2}]},
     }
     assert sentinel_step(["a", "b"])["depends_on"] == ["a", "b"]
+
+
+def test_sentinel_retries_any_failure_of_its_job():
+    # Its command is `true`: it fails only when the agent or a hook fails
+    # (duck 141: the pre-checkout hook could not reach GitHub), and fail and
+    # seal decide from the gates' own outcomes, so a retry never hides a
+    # failed gate.
+    assert sentinel_step(["a"])["retry"] == {"automatic": [{"exit_status": "*", "limit": 2}]}
 
 
 def test_with_sentinel_appends_it_last():

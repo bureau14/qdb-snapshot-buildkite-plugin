@@ -210,12 +210,19 @@ def gate_keys(gates: Sequence[str], doc: Mapping[str, Any]) -> list[str]:
     return [k for k in (step_key(s) for s in steps) if k]
 
 
+# The sentinel's command is `true`: its job fails only when the agent or a
+# hook fails (a checkout that cannot reach GitHub). fail and seal read the
+# gates' own outcomes, so retrying it never hides a failed gate.
+SENTINEL_RETRY = {"automatic": [{"exit_status": "*", "limit": 2}]}
+
+
 def sentinel_step(gates: Sequence[str]) -> dict[str, Any]:
     """The step that passes when every gate passed; without gates it passes at once."""
     s: dict[str, Any] = {"label": ":camera_with_flash: snapshot built", "key": BUILT}
     s["command"] = "true"
     if gates:
         s["depends_on"] = list(gates)
+    s["retry"] = copy.deepcopy(SENTINEL_RETRY)
     return s
 
 

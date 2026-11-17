@@ -51,6 +51,7 @@ from snapdep.jobs import (
     selection_requested,
     shared_failure,
 )
+from snapdep.pipeline import BUILT
 from snapdep.planner import PlanError
 from snapdep.records import (
     DISABLED_PATH,
@@ -203,6 +204,7 @@ def assert_plain(w):
                 "label": ":camera_with_flash: snapshot built",
                 "key": "snapdep-built",
                 "command": "true",
+                "retry": {"automatic": [{"exit_status": "*", "limit": 2}]},
             }
         ]
     }
@@ -372,6 +374,7 @@ def assert_real_pipeline(w, pins):
         "key": "snapdep-built",
         "command": "true",
         "depends_on": REST_GATES,
+        "retry": {"automatic": [{"exit_status": "*", "limit": 2}]},
     }
     assert json.loads(w.agent.meta_data[GATE_KEYS]) == REST_GATES
     for s in doc["steps"]:
@@ -672,6 +675,28 @@ def test_fail_does_not_record_when_this_build_is_the_version():
     v = version(p, REST, 77)
     v = type(v)(**{**v.__dict__, "build": REST_BUILD})
     w = World(store=stored_versions(v), meta=GATED, outcomes={"build": "hard_failed"})
+    assert run(fail, w) == 0
+    assert not list_failures(w.store, REST, key(REST))
+
+
+@pytest.mark.parametrize("outcome", ["hard_failed", "errored"])
+def test_fail_records_a_failed_sentinel_after_passed_gates(outcome):
+    # duck 141: every gate passed, the sentinel's job failed in the agent's
+    # pre-checkout hook, seal never ran. Without a record the dependents said
+    # "no failure on record: cancelled, lost or did not run".
+    outcomes = {"lint": "passed", "build": "passed", BUILT: outcome}
+    w = World(meta=GATED, outcomes=outcomes)
+    assert run(fail, w) == 0
+    [f] = list_failures(w.store, REST, key(REST))
+    assert [(s.key, s.outcome) for s in f.failed_steps] == [(BUILT, outcome)]
+    body, style, _ = w.agent.annotations[-1]
+    assert style == "error" and f"step {BUILT}: {outcome}" in body
+
+
+def test_fail_records_nothing_when_the_sentinel_did_not_run_after_passed_gates():
+    # A build cancelled between the last gate and the sentinel: no record, so
+    # whoever waits builds again (spec 5.7 rule 4).
+    w = World(meta=GATED, outcomes={"lint": "passed", "build": "passed", BUILT: ""})
     assert run(fail, w) == 0
     assert not list_failures(w.store, REST, key(REST))
 

@@ -39,6 +39,7 @@ from .declaration import (
 )
 from .git import Git, github_repo
 from .pipeline import (
+    BUILT,
     Pin,
     assign_keys,
     dump_pipeline,
@@ -360,6 +361,16 @@ def failed_gates(gates: Sequence[str], outcomes: Mapping[str, str]) -> list[Fail
     return [FailedStep(k, outcomes.get(k, "")) for k in gates if outcomes.get(k, "") != PASSED]
 
 
+def failed_sentinel(outcome: str) -> list[FailedStep]:
+    """The sentinel as a failed step when it ran and did not pass after every gate passed.
+
+    Its job failed in the agent (seal then never runs). A sentinel that did
+    not run (empty outcome: a cancelled build) is not a failure: whoever waits
+    builds again.
+    """
+    return [] if outcome in ("", PASSED) else [FailedStep(BUILT, outcome)]
+
+
 def pins_for(p: Plan, project: str, versions: Mapping[str, Version | None]) -> dict[str, Pin]:
     """Build id and ref of every direct dependency of ``project`` that has a version."""
     out = {}
@@ -642,6 +653,8 @@ def fail(job: Job, read: DeclarationSource, fx: Effects) -> int:
         fx.log("the pipeline was never uploaded: nothing to record")
         return 0
     failed = failed_gates(gates, {k: fx.agent.step_outcome(k) for k in gates})
+    if not failed:
+        failed = failed_sentinel(fx.agent.step_outcome(BUILT))
     if not failed:
         fx.log("every gate passed: nothing to record")
         return 0
