@@ -107,6 +107,9 @@ _RETRY_CODES = {
     "RequestTimeout",
     "InternalError",
     "ServiceUnavailable",
+    # 409: a conditional write raced another one; the retry gets 412 or succeeds.
+    "ConditionalRequestConflict",
+    "OperationAborted",
 }
 _ABSENT_CODES = {"NoSuchKey", "NotFound", "404"}
 _PRECONDITION_CODES = {"PreconditionFailed", "412"}
@@ -134,7 +137,9 @@ def classify(exc: BaseException) -> str:
         status = exc.response.get("ResponseMetadata", {}).get("HTTPStatusCode", 0)
         if status == 412 or code in _PRECONDITION_CODES:
             return PRECONDITION
-        if status == 404 or code in _ABSENT_CODES:
+        # Only a missing object is "no record"; a missing bucket (NoSuchBucket,
+        # also 404) is a configuration error.
+        if code in _ABSENT_CODES or (status == 404 and not code):
             return ABSENT
         if status == 429 or status >= 500 or code in _RETRY_CODES:
             return RETRY

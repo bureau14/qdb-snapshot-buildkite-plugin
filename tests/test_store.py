@@ -88,6 +88,10 @@ def client_error(status: int, code: str, op: str = "PutObject") -> ClientError:
     [
         (client_error(412, "PreconditionFailed"), PRECONDITION),
         (client_error(404, "NoSuchKey", "GetObject"), ABSENT),
+        (client_error(404, "404", "HeadObject"), ABSENT),
+        (client_error(404, "", "HeadObject"), ABSENT),
+        (client_error(404, "NoSuchBucket", "GetObject"), FATAL),
+        (client_error(409, "ConditionalRequestConflict"), RETRY),
         (client_error(429, "TooManyRequests"), RETRY),
         (client_error(503, "SlowDown"), RETRY),
         (client_error(500, "InternalError"), RETRY),
