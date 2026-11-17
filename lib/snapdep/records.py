@@ -443,13 +443,19 @@ def decode(body: bytes, where: str) -> Any:
 # ---------------------------------------------------------------------------
 
 
-def load_plan(s: Store, plan_id: str) -> Plan:
-    """The plan ``plan_id``; ``RecordError`` when it does not exist."""
+def find_plan(s: Store, plan_id: str) -> Plan | None:
+    """The plan ``plan_id``; None when it does not exist."""
     path = plan_path(plan_id)
     o = s.get(path)
-    if o is None:
-        raise RecordError(f"{path}: plan {plan_id} does not exist")
-    return plan_from_dict(decode(o.body, path), path)
+    return None if o is None else plan_from_dict(decode(o.body, path), path)
+
+
+def load_plan(s: Store, plan_id: str) -> Plan:
+    """The plan ``plan_id``; ``RecordError`` when it does not exist."""
+    p = find_plan(s, plan_id)
+    if p is None:
+        raise RecordError(f"{plan_path(plan_id)}: plan {plan_id} does not exist")
+    return p
 
 
 def create_or_load_plan(s: Store, p: Plan) -> Plan:

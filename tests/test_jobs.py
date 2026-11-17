@@ -31,6 +31,7 @@ from plans import (
     version,
 )
 
+from snapdep.agent import AgentError
 from snapdep.declaration import PATH, parse_declaration
 from snapdep.fakes import FakeGit, FixedGenerator, MemoryStore, RecordingAgent
 from snapdep.jobs import (
@@ -496,6 +497,56 @@ def test_enter_root_makes_the_plan_once_and_triggers():
     trigger = w.uploaded(0)["steps"][0]
     assert trigger["build"]["env"] == {"SNAPDEP_PLAN": REST_BUILD.uuid}
     assert trigger["build"]["message"] == "snapshot dependency of qdb-api-rest build 77"
+
+
+def test_retried_root_enter_loads_the_stored_plan_without_resolving():
+    w = root_world()
+    assert run(enter, w, SNAPDEP_PLAN=None) == 0
+    first = load_plan(w.store, REST_BUILD.uuid)
+    retry = root_world()
+    retry.store.objects = dict(w.store.objects)
+    retry.git.heads = {}  # the heads moved away or GitHub cannot be reached
+    assert run(enter, retry, SNAPDEP_PLAN=None, BUILDKITE_RETRY_COUNT="1") == 0
+    assert not [c for c in retry.git.calls if c[0] == "head"]
+    assert load_plan(retry.store, REST_BUILD.uuid) == first
+    assert retry.step_keys(0) == w.step_keys(0)
+
+
+class RejectingAgent(RecordingAgent):
+    """An agent whose build has the step keys of an earlier upload already."""
+
+    def pipeline_upload(self, document):
+        raise AgentError(
+            "buildkite-agent pipeline upload failed (1): pipeline upload rejected: The key "
+            '"snapdep-built" has already been used by another step in this build'
+        )
+
+
+def test_enter_does_not_upload_again_after_an_earlier_try_did():
+    p = plan()
+    w = World(store=stored_versions(version(p, DUCK, 5), version(p, QDB, 9)))
+    w.agent.meta_data["snapdep-uploaded-enter"] = "1"
+    assert run(enter, w, BUILDKITE_RETRY_COUNT="1") == 0
+    assert not w.agent.uploads and not w.generator.commands
+
+
+def test_generate_does_not_upload_again_after_an_earlier_try_did():
+    w = World(meta={MODE: "build", KEY: key(REST), PLAN: PLAN_ID, "snapdep-uploaded-generate": "1"})
+    assert run(generate, w) == 0
+    assert not w.agent.uploads
+
+
+def test_retried_enter_takes_a_duplicate_key_rejection_as_uploaded():
+    p = plan()
+    w = World(store=stored_versions(version(p, DUCK, 5), version(p, QDB, 9)))
+    w.agent = RejectingAgent(w.agent.meta_data)
+    w.fx = Effects(w.store, w.agent, w.git, w.generator, lambda: NOW, w.logs.append)
+    assert run(enter, w, BUILDKITE_RETRY_COUNT="1") == 0
+    assert w.agent.meta_data["snapdep-uploaded-enter"] == "1"
+    assert any("uploaded by an earlier try of enter" in m for m in w.logs)
+    w.agent.meta_data.pop("snapdep-uploaded-enter")
+    with pytest.raises(AgentError, match="already been used"):
+        run(enter, w)
 
 
 def test_enter_root_with_rebuild_all_plans_a_rebuild_of_the_chain():

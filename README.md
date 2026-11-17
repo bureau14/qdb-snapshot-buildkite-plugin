@@ -101,7 +101,9 @@ selection, prints a different pipeline.
 
 Build meta-data written by the jobs: `snapdep-arrived`, `snapdep-mode`
 (`plain`, `reused` or `build`), `snapdep-key`, `snapdep-plan`,
-`snapdep-gate-keys`.
+`snapdep-gate-keys`, and `snapdep-uploaded-enter` and
+`snapdep-uploaded-generate`: set once that job's documents are in the build, so
+that a retry of the job does not upload them again.
 
 ## Layout
 

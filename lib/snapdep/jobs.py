@@ -26,7 +26,7 @@ from typing import Callable
 import yaml
 
 from . import annotation as notes
-from .agent import MESSAGE, PIPELINE_FILTER, Agent, Generator
+from .agent import MESSAGE, PIPELINE_FILTER, Agent, AgentError, Generator
 from .declaration import (
     PATH,
     Declaration,
@@ -64,6 +64,7 @@ from .records import (
     create_or_load_plan,
     epoch_from_iso,
     failure_record,
+    find_plan,
     find_version,
     holder_record,
     is_disabled,
@@ -88,6 +89,13 @@ MODE = "snapdep-mode"
 KEY = "snapdep-key"
 PLAN = "snapdep-plan"
 GATE_KEYS = "snapdep-gate-keys"
+UPLOADED = "snapdep-uploaded-"  # + enter or generate: that job's documents are in the build
+
+ENTER = "enter"
+GENERATE = "generate"
+
+# What Buildkite answers to an upload whose step keys are in the build (survey 28, SVB1).
+DUPLICATE_KEY = "has already been used by another step in this build"
 
 PLAIN = "plain"
 REUSED = "reused"
@@ -125,7 +133,8 @@ class Job:
     ``plan_id``: ``SNAPDEP_PLAN`` (set on builds started by a trigger step), None
     for a root. ``rebuild``: ``""``, ``"1"`` or ``"all"`` (``SNAPDEP_REBUILD``).
     ``plugins``: ``BUILDKITE_PLUGINS``. ``selection``: the build asks for a
-    part of its pipeline (``selection_requested``).
+    part of its pipeline (``selection_requested``). ``retried``: this job is a
+    retry (``BUILDKITE_RETRY_COUNT`` above 0).
     """
 
     project: str
@@ -137,6 +146,7 @@ class Job:
     disabled: bool
     plugins: str | None
     selection: bool = False
+    retried: bool = False
 
 
 def _required(env: Env, name: str) -> str:
@@ -147,7 +157,7 @@ def _required(env: Env, name: str) -> str:
 
 
 def is_yaml_mapping(text: str) -> bool:
-    """True when ``text`` parses as a non-empty YAML mapping; invalid YAML is not one."""
+    """True when ``text`` parses as a YAML mapping; invalid YAML is not one."""
     try:
         return isinstance(yaml.safe_load(text), dict)
     except yaml.YAMLError:
@@ -200,6 +210,7 @@ def job_from_env(env: Env) -> Job:
         disabled=disabled,
         plugins=env.get("BUILDKITE_PLUGINS"),
         selection=selection_requested(env),
+        retried=int(env.get("BUILDKITE_RETRY_COUNT", "0") or "0") > 0,
     )
 
 
@@ -341,10 +352,17 @@ def lookup_versions(s: Store, p: Plan, projects: Sequence[str]) -> dict[str, Ver
 
 
 def obtain_plan(job: Job, decl: Declaration, fx: Effects) -> Plan:
-    """The plan of this build: loaded (``SNAPDEP_PLAN``), or made once and stored (a root)."""
+    """The plan of this build: loaded (``SNAPDEP_PLAN``), or made once and stored (a root).
+
+    A root whose plan is stored already (a retried enter) loads it and
+    resolves nothing.
+    """
     commit = fx.git.head_commit()
     if job.plan_id is not None:
         return load_plan_for(fx.store, job.plan_id, job.project, commit)
+    if find_plan(fx.store, job.build.uuid) is not None:
+        fx.log(f"the plan of this build is stored already: {job.build.uuid}")
+        return load_plan_for(fx.store, job.build.uuid, job.project, commit)
     if job.repo is None:
         raise JobError("BUILDKITE_REPO is not a GitHub repository")
     root = Root(
@@ -389,18 +407,47 @@ def build_gates(fx: Effects) -> tuple[str, list[str] | None]:
 # ---------------------------------------------------------------------------
 
 
-def run_plain(text: str | None, entry: Pipeline | None, reason: str, fx: Effects) -> int:
+def is_duplicate_key_rejection(exc: AgentError) -> bool:
+    """True when ``pipeline upload`` was rejected because its step keys are in the build."""
+    return DUPLICATE_KEY in str(exc)
+
+
+def already_uploaded(step: str, fx: Effects) -> bool:
+    """True when an earlier try of job ``step`` uploaded its documents (spec 5.7 rule 2)."""
+    if fx.agent.meta_data_get(UPLOADED + step) is None:
+        return False
+    fx.log(f"an earlier try of {step} uploaded its pipeline: nothing to do")
+    return True
+
+
+def upload_once(step: str, documents: Sequence[str], job: Job, fx: Effects) -> None:
+    """Upload ``documents`` into the build, then mark job ``step`` as uploaded.
+
+    In a retried job, a document whose step keys are in the build already was
+    uploaded by the earlier try that died before it set the mark.
+    """
+    for d in documents:
+        try:
+            fx.agent.pipeline_upload(d)
+        except AgentError as exc:
+            if not (job.retried and is_duplicate_key_rejection(exc)):
+                raise
+            fx.log(f"uploaded by an earlier try of {step}: {exc}")
+    fx.agent.meta_data_set(UPLOADED + step, "1")
+
+
+def run_plain(job: Job, text: str | None, entry: Pipeline | None, reason: str, fx: Effects) -> int:
     """Plain mode: the generated pipeline unchanged, a sentinel without dependencies."""
     fx.log(f"plain mode: {reason}")
     if text is None:
         text = fx.generator.run(generate_command(entry or Pipeline(slug="")))
     fx.agent.meta_data_set(MODE, PLAIN)
-    fx.agent.pipeline_upload(text)
-    fx.agent.pipeline_upload(dump_pipeline(steps_document([sentinel_step([])])))
+    upload_once(ENTER, [text, dump_pipeline(steps_document([sentinel_step([])]))], job, fx)
     return 0
 
 
 def upload_real_pipeline(
+    step: str,
     job: Job,
     entry: Pipeline,
     p: Plan,
@@ -416,7 +463,7 @@ def upload_real_pipeline(
     injected = inject_build_ids(doc, job.project, pins_for(p, job.project, versions), own.deps)
     gates = gate_keys(entry.gates, doc)
     fx.agent.meta_data_set(GATE_KEYS, json.dumps(gates))
-    fx.agent.pipeline_upload(dump_pipeline(with_sentinel(injected, gates)))
+    upload_once(step, [dump_pipeline(with_sentinel(injected, gates))], job, fx)
     fx.log(f"uploaded the pipeline; the gate is {', '.join(gates) or 'empty'}")
     return 0
 
@@ -450,13 +497,15 @@ def entry_if_readable(job: Job, read: DeclarationSource, fx: Effects) -> Pipelin
 
 def enter(job: Job, read: DeclarationSource, fx: Effects) -> int:
     """The first gate job: plain, reuse, a shared failure, or build (with triggers first)."""
+    if already_uploaded(ENTER, fx):
+        return 0
     off = switched_off(job, fx)
     if off is not None:
-        return run_plain(None, entry_if_readable(job, read, fx), off, fx)
+        return run_plain(job, None, entry_if_readable(job, read, fx), off, fx)
     decl = read()
     entry = pipeline_entry(decl, job.project)
     if entry is None or decl is None:
-        return run_plain(None, None, f"{PATH} has no entry for {job.project}", fx)
+        return run_plain(job, None, None, f"{PATH} has no entry for {job.project}", fx)
 
     command = generate_command(entry)
     text = fx.generator.run(command)
@@ -464,7 +513,7 @@ def enter(job: Job, read: DeclarationSource, fx: Effects) -> int:
     full = assign_keys(parse_pipeline(fx.generator.run(command, True))) if job.selection else None
     partial = partial_reason(entry.gates, doc, full)
     if partial is not None:
-        return run_plain(text, entry, f"not a version build: {partial}", fx)
+        return run_plain(job, text, entry, f"not a version build: {partial}", fx)
 
     plan = obtain_plan(job, decl, fx)
     own = plan.nodes[job.project]
@@ -477,7 +526,7 @@ def enter(job: Job, read: DeclarationSource, fx: Effects) -> int:
     v = versions[job.project]
     if counts_as_built(v, plan, forced) and v is not None:
         fx.agent.meta_data_set(MODE, REUSED)
-        fx.agent.pipeline_upload(dump_pipeline(steps_document([sentinel_step([])])))
+        upload_once(ENTER, [dump_pipeline(steps_document([sentinel_step([])]))], job, fx)
         fx.agent.annotate(notes.reuse_annotation(job.project, v), "info", notes.CONTEXT)
         fx.log(f"reused build {v.build.number} ({v.build.url}) for {own.key}")
         return 0
@@ -501,12 +550,11 @@ def enter(job: Job, read: DeclarationSource, fx: Effects) -> int:
     if stale:
         triggers = trigger_steps(plan, job.project, stale)
         keys = [t["key"] for t in triggers]
-        fx.agent.pipeline_upload(
-            dump_pipeline(steps_document([*triggers, generate_step(plugin, keys)]))
-        )
+        document = dump_pipeline(steps_document([*triggers, generate_step(plugin, keys)]))
+        upload_once(ENTER, [document], job, fx)
         fx.log(f"building {', '.join(stale)} first")
         return 0
-    return upload_real_pipeline(job, entry, plan, doc, versions, fx)
+    return upload_real_pipeline(ENTER, job, entry, plan, doc, versions, fx)
 
 
 # ---------------------------------------------------------------------------
@@ -516,6 +564,8 @@ def enter(job: Job, read: DeclarationSource, fx: Effects) -> int:
 
 def generate(job: Job, read: DeclarationSource, fx: Effects) -> int:
     """After the triggers: fail when a dependency has no version, else upload the pipeline."""
+    if already_uploaded(GENERATE, fx):
+        return 0
     entry = build_entry(job, read())
     plan = build_plan(job, fx)
     own = plan.nodes[job.project]
@@ -531,7 +581,7 @@ def generate(job: Job, read: DeclarationSource, fx: Effects) -> int:
         fx.log(f"no version for {', '.join(missing)}")
         return 1
     doc = assign_keys(parse_pipeline(fx.generator.run(generate_command(entry))))
-    return upload_real_pipeline(job, entry, plan, doc, versions, fx)
+    return upload_real_pipeline(GENERATE, job, entry, plan, doc, versions, fx)
 
 
 # ---------------------------------------------------------------------------
