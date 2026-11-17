@@ -1,0 +1,32 @@
+# .buildkite/snapshot-bootstrap.yml of an adopting repository.
+#
+# The three gate jobs of the qdb-snapshot plugin. The upload job prints this
+# file (see pipeline-shim.py) with __COMMIT__ replaced by the commit being
+# built, so the gate is named after the pipeline and the commit.
+#
+# Before copying: replace every REPLACE-WITH-PLUGIN-COMMIT with the 40-hex
+# commit of bureau14/qdb-snapshot-buildkite-plugin to use. Leave __COMMIT__
+# and ${BUILDKITE_PIPELINE_SLUG} as they are.
+steps:
+  - label: ":camera_with_flash: snapshot"
+    key: snapdep-enter
+    concurrency: 1
+    concurrency_group: "snapdep/${BUILDKITE_PIPELINE_SLUG}/__COMMIT__"
+    plugins:
+      - bureau14/qdb-snapshot#REPLACE-WITH-PLUGIN-COMMIT: { step: enter }
+  - label: ":camera_with_flash: snapshot failed"
+    key: snapdep-fail
+    concurrency: 1
+    concurrency_group: "snapdep/${BUILDKITE_PIPELINE_SLUG}/__COMMIT__"
+    depends_on:
+      - { step: snapdep-enter, allow_failure: true }
+      - { step: snapdep-built, allow_failure: true }
+    plugins:
+      - bureau14/qdb-snapshot#REPLACE-WITH-PLUGIN-COMMIT: { step: fail }
+  - label: ":camera_with_flash: snapshot seal"
+    key: snapdep-seal
+    concurrency: 1
+    concurrency_group: "snapdep/${BUILDKITE_PIPELINE_SLUG}/__COMMIT__"
+    depends_on: [snapdep-enter, snapdep-built]
+    plugins:
+      - bureau14/qdb-snapshot#REPLACE-WITH-PLUGIN-COMMIT: { step: seal }
