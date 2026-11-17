@@ -156,6 +156,13 @@ def test_shared_failure_is_the_latest_other_failure_after_arrival():
     assert shared_failure([late], None, REST_BUILD.uuid) is None
 
 
+def test_shared_failure_ignores_a_build_that_only_soft_failed():
+    soft = failed(REST, key(REST), build(REST, 2), {"x": "soft_failed"}, at=T0 + 60)
+    mixed = failed(REST, key(REST), build(REST, 3), {"x": "soft_failed", "y": ""}, at=T0 + 61)
+    assert shared_failure([soft], T0 + 50, REST_BUILD.uuid) is None
+    assert shared_failure([soft, mixed], T0 + 50, REST_BUILD.uuid) == mixed
+
+
 def test_rebuild_setting_rejects_unknown_values():
     with pytest.raises(JobError, match="SNAPDEP_REBUILD"):
         job_from_env(environment(SNAPDEP_REBUILD="yes"))
@@ -277,7 +284,7 @@ def test_enter_not_a_version_build_without_a_command_step():
     w = World(output="steps:\n  - wait\n  - trigger: other\n")
     assert run(enter, w) == 0
     assert w.agent.meta_data[MODE] == "plain"
-    assert "no command step to gate a version on" in w.logs[0]
+    assert "no command step that can gate a version" in w.logs[0]
 
 
 def test_seal_refuses_an_empty_gate_list():

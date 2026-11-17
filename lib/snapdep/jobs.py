@@ -103,6 +103,7 @@ BUILD = "build"
 
 REBUILD_SELF = "1"
 PASSED = "passed"
+SOFT_FAILED = "soft_failed"
 
 
 class JobError(RuntimeError):
@@ -234,7 +235,7 @@ def partial_reason(
     if unfiltered is not None and unfiltered != doc:
         return f"{PIPELINE_FILTER} or the build message selects a part of the pipeline"
     if not gate_keys(gates, doc):
-        return "the pipeline has no command step to gate a version on"
+        return "the pipeline has no command step that can gate a version"
     return None
 
 
@@ -269,17 +270,27 @@ def stale_dependencies(p: Plan, project: str, versions: Mapping[str, Version | N
     ]
 
 
+def only_soft_failed(f: Failure) -> bool:
+    """True when every failed step of ``f`` soft-failed: its build passed, without a version."""
+    return bool(f.failed_steps) and all(s.outcome == SOFT_FAILED for s in f.failed_steps)
+
+
 def shared_failure(
     failures: Sequence[Failure], arrived: float | None, own_build: str
 ) -> Failure | None:
     """The failure of the build this one waited behind at the gate, if there is one.
 
     The latest failure of another build recorded after this build arrived.
-    ``failures`` are oldest first. Without an arrival time there is none.
+    ``failures`` are oldest first. Without an arrival time there is none. A
+    record whose failed steps all soft-failed is not one: that build passed.
     """
     if arrived is None:
         return None
-    later = [f for f in failures if f.recorded_at > arrived and f.build.uuid != own_build]
+    later = [
+        f
+        for f in failures
+        if f.recorded_at > arrived and f.build.uuid != own_build and not only_soft_failed(f)
+    ]
     return later[-1] if later else None
 
 

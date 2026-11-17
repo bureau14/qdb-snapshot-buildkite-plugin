@@ -60,6 +60,12 @@ retry.
    from the pipeline's own project are never declared. The file has the same
    content on every release line.
 
+   Without `gates`, every generated command step is a gate, except a step that
+   accepts any failure (`soft_fail: true`): its failure does not fail the build,
+   so it does not decide whether the build is a version either. A declared gate
+   with `soft_fail` must pass; when it soft-fails, the build passes without
+   becoming a version, and builds that waited behind it build again.
+
 2. Copy [`examples/snapshot-bootstrap.yml`](examples/snapshot-bootstrap.yml) to
    `.buildkite/snapshot-bootstrap.yml` and replace `REPLACE-WITH-PLUGIN-COMMIT`
    with the 40-hex commit of this repository to use. Every job of the plugin

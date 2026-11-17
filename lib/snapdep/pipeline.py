@@ -184,12 +184,30 @@ def missing_gates(gates: Sequence[str], doc: Mapping[str, Any]) -> list[str]:
     return [g for g in gates if g not in keys]
 
 
+def accepts_any_failure(s: Mapping[str, Any]) -> bool:
+    """True for a step whose every failure is a soft failure (``soft_fail: true`` or exit ``*``).
+
+    Its build passes when it fails, so it cannot decide whether the build is a
+    version.
+    """
+    v = s.get("soft_fail")
+    if v is True or v == "true":
+        return True
+    return isinstance(v, list) and any(
+        isinstance(e, dict) and str(e.get("exit_status")) == "*" for e in v
+    )
+
+
 def gate_keys(gates: Sequence[str], doc: Mapping[str, Any]) -> list[str]:
     """The steps that must pass for a version: the declared gates, else every command step.
 
-    ``doc`` must have keys on its command steps (``assign_keys``).
+    By default a step that accepts any failure (``accepts_any_failure``) is not
+    a gate. ``doc`` must have keys on its command steps (``assign_keys``).
     """
-    return list(gates) if gates else command_step_keys(doc)
+    if gates:
+        return list(gates)
+    steps = (s for s in command_steps(doc) if not accepts_any_failure(s))
+    return [k for k in (step_key(s) for s in steps) if k]
 
 
 def sentinel_step(gates: Sequence[str]) -> dict[str, Any]:

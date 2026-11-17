@@ -127,6 +127,22 @@ def test_gate_keys_default_to_every_command_step():
     assert gate_keys(["e2e"], doc) == ["e2e"]
 
 
+SOFT = """
+steps:
+  - {key: a, command: x, soft_fail: true}
+  - {key: b, command: x, soft_fail: [{exit_status: "*"}]}
+  - {key: c, command: x, soft_fail: [{exit_status: 2}]}
+  - {key: d, command: x, soft_fail: false}
+  - {key: e, command: x}
+"""
+
+
+def test_gate_keys_leave_out_steps_that_accept_any_failure():
+    doc = parse_pipeline(SOFT)
+    assert gate_keys([], doc) == ["c", "d", "e"]
+    assert gate_keys(["a", "e"], doc) == ["a", "e"], "a declared gate is a gate"
+
+
 def test_sentinel_with_and_without_gates():
     assert sentinel_step([]) == {
         "label": ":camera_with_flash: snapshot built",
