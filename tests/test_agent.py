@@ -91,6 +91,13 @@ def test_generator_env_sets_the_phase():
     }
 
 
+def test_generator_env_restores_the_jobs_pythonpath():
+    hook = {"A": "1", "PYTHONPATH": "/plugin/lib", "SNAPDEP_JOB_PYTHONPATH": "/job"}
+    assert generator_env(hook) == {"A": "1", "PYTHONPATH": "/job", "SNAPDEP_PHASE": "generate"}
+    hook = {"A": "1", "PYTHONPATH": "/plugin/lib", "SNAPDEP_JOB_PYTHONPATH": ""}
+    assert generator_env(hook) == {"A": "1", "SNAPDEP_PHASE": "generate"}
+
+
 def test_shell_generator_returns_stdout_with_the_phase_set(tmp_path):
     g = ShellGenerator(cwd=str(tmp_path), env={"PATH": "/usr/bin:/bin"})
     assert g.run('echo "phase=$SNAPDEP_PHASE"; pwd >&2') == "phase=generate\n"

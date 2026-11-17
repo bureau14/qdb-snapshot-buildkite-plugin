@@ -61,7 +61,9 @@ main() {
   [[ -n "${python3}" ]] || fail "needs Python 3.9 or later on the agent"
   ensure_venv "${python3}"
   echo "--- :camera_with_flash: snapshot ${STEP}"
-  PYTHONPATH="${PLUGIN_DIR}/lib" exec "${VENV_DIR}/bin/python" -m snapdep "${STEP}"
+  # The generator gets the job's own PYTHONPATH back (snapdep.agent.generator_env).
+  SNAPDEP_JOB_PYTHONPATH="${PYTHONPATH:-}" PYTHONPATH="${PLUGIN_DIR}/lib" \
+    exec "${VENV_DIR}/bin/python" -m snapdep "${STEP}"
 }
 
 main

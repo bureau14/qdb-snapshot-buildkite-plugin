@@ -160,9 +160,23 @@ PIPELINE_FILTER = "QDB_PIPELINE_FILTER"
 MESSAGE = "BUILDKITE_MESSAGE"
 
 
+PYTHONPATH = "PYTHONPATH"
+# The job's own PYTHONPATH, saved by hooks/command before it points PYTHONPATH
+# at the plugin's package.
+JOB_PYTHONPATH = "SNAPDEP_JOB_PYTHONPATH"
+
+
 def generator_env(env: Mapping[str, str]) -> dict[str, str]:
-    """The environment of the generator: ``env`` with ``SNAPDEP_PHASE=generate``."""
-    return {**env, **GENERATE_PHASE}
+    """The environment of the generator: ``env`` with ``SNAPDEP_PHASE=generate``.
+
+    ``PYTHONPATH`` is the job's own (``SNAPDEP_JOB_PYTHONPATH``), not the one
+    of this process, so that the repository's generator never sees the
+    plugin's package.
+    """
+    out = {k: v for k, v in env.items() if k not in (PYTHONPATH, JOB_PYTHONPATH)}
+    if env.get(JOB_PYTHONPATH):
+        out[PYTHONPATH] = env[JOB_PYTHONPATH]
+    return {**out, **GENERATE_PHASE}
 
 
 def unfiltered_env(env: Mapping[str, str]) -> dict[str, str]:
