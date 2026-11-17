@@ -23,8 +23,10 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Callable
 
+import yaml
+
 from . import annotation as notes
-from .agent import Agent, Generator
+from .agent import MESSAGE, PIPELINE_FILTER, Agent, Generator
 from .declaration import PATH, Declaration, Pipeline, generate_command, pipeline_entry
 from .git import Git, github_repo
 from .pipeline import (
@@ -110,7 +112,8 @@ class Job:
 
     ``plan_id``: ``SNAPDEP_PLAN`` (set on builds started by a trigger step), None
     for a root. ``rebuild``: ``""``, ``"1"`` or ``"all"`` (``SNAPDEP_REBUILD``).
-    ``plugins``: ``BUILDKITE_PLUGINS``.
+    ``plugins``: ``BUILDKITE_PLUGINS``. ``selection``: the build asks for a
+    part of its pipeline (``selection_requested``).
     """
 
     project: str
@@ -121,6 +124,7 @@ class Job:
     rebuild: str
     disabled: bool
     plugins: str | None
+    selection: bool = False
 
 
 def _required(env: Env, name: str) -> str:
@@ -128,6 +132,27 @@ def _required(env: Env, name: str) -> str:
     if not v:
         raise JobError(f"{name} is not set: run inside a Buildkite job")
     return v
+
+
+def is_yaml_mapping(text: str) -> bool:
+    """True when ``text`` parses as a non-empty YAML mapping; invalid YAML is not one."""
+    try:
+        return isinstance(yaml.safe_load(text), dict)
+    except yaml.YAMLError:
+        return False
+
+
+def selection_requested(env: Env) -> bool:
+    """Whether the build may select a part of its pipeline, as ``qdb_pipeline.selection`` reads it.
+
+    ``QDB_PIPELINE_FILTER`` is set and not blank, or the build message is a
+    YAML mapping. Whether the generator honours it is decided by running it
+    without the selection (``enter``).
+    """
+    f = env.get(PIPELINE_FILTER)
+    if f is not None:
+        return bool(f.strip())
+    return is_yaml_mapping(env.get(MESSAGE, ""))
 
 
 def rebuild_setting(env: Env) -> str:
@@ -157,6 +182,7 @@ def job_from_env(env: Env) -> Job:
         rebuild=rebuild_setting(env),
         disabled=env.get("SNAPDEP_DISABLE", "") == "1",
         plugins=env.get("BUILDKITE_PLUGINS"),
+        selection=selection_requested(env),
     )
 
 
@@ -171,6 +197,25 @@ def plain_reason(job: Job, entry: Pipeline | None) -> str | None:
         return "SNAPDEP_DISABLE=1"
     if entry is None:
         return f"{PATH} has no entry for {job.project}"
+    return None
+
+
+def partial_reason(
+    gates: Sequence[str], doc: Mapping, unfiltered: Mapping | None = None
+) -> str | None:
+    """Why the generated pipeline ``doc`` cannot make a version; None when it can.
+
+    A declared gate is missing (a filtered build); the pipeline generated
+    without the build's selection (``unfiltered``, when the build asked for
+    one) differs from ``doc``; or there is no step to gate a version on.
+    """
+    missing = missing_gates(gates, doc)
+    if missing:
+        return f"no step {', '.join(missing)}"
+    if unfiltered is not None and unfiltered != doc:
+        return f"{PIPELINE_FILTER} or the build message selects a part of the pipeline"
+    if not gate_keys(gates, doc):
+        return "the pipeline has no command step to gate a version on"
     return None
 
 
@@ -356,9 +401,9 @@ def upload_real_pipeline(
     fx: Effects,
 ) -> int:
     """Section 5.3 steps 3 and 4: inject the dependencies' builds, upload with the sentinel."""
-    missing = missing_gates(entry.gates, doc)
-    if missing:
-        raise JobError(f"gates {', '.join(missing)} are not in the generated pipeline")
+    partial = partial_reason(entry.gates, doc)
+    if partial is not None:
+        raise JobError(f"the generated pipeline is not a version build: {partial}")
     own = p.nodes[job.project]
     injected = inject_build_ids(doc, job.project, pins_for(p, job.project, versions), own.deps)
     gates = gate_keys(entry.gates, doc)
@@ -382,11 +427,13 @@ def enter(job: Job, decl: Declaration | None, fx: Effects) -> int:
     if reason is not None or entry is None or decl is None:
         return run_plain(None, entry, reason or "no declaration", fx)
 
-    text = fx.generator.run(generate_command(entry))
+    command = generate_command(entry)
+    text = fx.generator.run(command)
     doc = assign_keys(parse_pipeline(text))
-    missing = missing_gates(entry.gates, doc)
-    if missing:
-        return run_plain(text, entry, f"not a version build: no step {', '.join(missing)}", fx)
+    full = assign_keys(parse_pipeline(fx.generator.run(command, True))) if job.selection else None
+    partial = partial_reason(entry.gates, doc, full)
+    if partial is not None:
+        return run_plain(text, entry, f"not a version build: {partial}", fx)
 
     plan = obtain_plan(job, decl, fx)
     own = plan.nodes[job.project]
@@ -509,6 +556,8 @@ def seal(job: Job, decl: Declaration | None, fx: Effects) -> int:
     key, gates = build_gates(fx)
     if gates is None:
         raise JobError(f"meta-data {GATE_KEYS} is not set: the pipeline was never uploaded")
+    if not gates:
+        raise JobError(f"meta-data {GATE_KEYS} is empty: a build without gates is not a version")
     failed = failed_gates(gates, {k: fx.agent.step_outcome(k) for k in gates})
     if failed:
         fx.log(f"not a version: {', '.join(f'{s.key} {s.outcome}' for s in failed)}")

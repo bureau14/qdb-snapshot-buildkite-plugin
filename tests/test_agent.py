@@ -9,6 +9,7 @@ from snapdep.agent import (
     RealAgent,
     ShellGenerator,
     generator_env,
+    unfiltered_env,
 )
 from snapdep.fakes import FixedGenerator, RecordingAgent
 
@@ -95,6 +96,19 @@ def test_shell_generator_returns_stdout_with_the_phase_set(tmp_path):
     assert g.run('echo "phase=$SNAPDEP_PHASE"; pwd >&2') == "phase=generate\n"
     with pytest.raises(GeneratorError, match="exited 3"):
         g.run("exit 3")
+
+
+def test_unfiltered_env_drops_the_selection():
+    env = {"A": "1", "QDB_PIPELINE_FILTER": "os: linux", "BUILDKITE_MESSAGE": "{os: linux}"}
+    assert unfiltered_env(env) == {"A": "1", "BUILDKITE_MESSAGE": ""}
+
+
+def test_shell_generator_runs_without_the_selection(tmp_path):
+    env = {"PATH": "/usr/bin:/bin", "QDB_PIPELINE_FILTER": "f", "BUILDKITE_MESSAGE": "m"}
+    g = ShellGenerator(cwd=str(tmp_path), env=env)
+    show = 'echo "${QDB_PIPELINE_FILTER-unset}|$BUILDKITE_MESSAGE"'
+    assert g.run(show) == "f|m\n"
+    assert g.run(show, unfiltered=True) == "unset|\n"
 
 
 def test_recording_agent_and_fixed_generator():

@@ -89,8 +89,15 @@ It runs in the checkout of the enter and generate jobs.
 
 Set by the plugin, not by people: `SNAPDEP_PLAN` (the plan id, on builds started
 by a trigger step) and `SNAPDEP_PHASE=generate` (tells `pipeline.py` to print
-the real pipeline). A build whose declared `gates` are not all in the generated
-pipeline (a filtered build) runs in plain mode.
+the real pipeline).
+
+A build that runs only a part of its pipeline is not a version build: it runs
+in plain mode, never reuses a version and is never recorded as one. That is the
+case when a declared gate is not in the generated pipeline, when the generated
+pipeline has no command step, and when the build selects a part of the pipeline
+with `QDB_PIPELINE_FILTER` or a YAML mapping as build message (as
+`qdb_pipeline.selection` reads them) and the generator, run again without that
+selection, prints a different pipeline.
 
 Build meta-data written by the jobs: `snapdep-arrived`, `snapdep-mode`
 (`plain`, `reused` or `build`), `snapdep-key`, `snapdep-plan`,

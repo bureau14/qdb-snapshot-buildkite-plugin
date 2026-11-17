@@ -148,12 +148,19 @@ class RecordingAgent:
 
 
 class FixedGenerator:
-    """``Generator`` that prints ``output`` for any command; ``commands`` records the calls."""
+    """``Generator`` that prints ``output`` for any command; ``commands`` records the calls.
 
-    def __init__(self, output: str) -> None:
+    ``unfiltered``: what it prints when run without the pipeline selection;
+    ``output`` when None (a generator that ignores the selection).
+    """
+
+    def __init__(self, output: str, unfiltered: str | None = None) -> None:
         self.output = output
+        self.unfiltered = unfiltered
         self.commands: list[str] = []
 
-    def run(self, command: str) -> str:
+    def run(self, command: str, unfiltered: bool = False) -> str:
         self.commands.append(command)
+        if unfiltered and self.unfiltered is not None:
+            return self.unfiltered
         return self.output

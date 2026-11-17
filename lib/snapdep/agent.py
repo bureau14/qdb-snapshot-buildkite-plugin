@@ -56,9 +56,14 @@ class Agent(Protocol):
 
 
 class Generator(Protocol):
-    """Runs a generator command in the checkout and returns its standard output."""
+    """Runs a generator command in the checkout and returns its standard output.
 
-    def run(self, command: str) -> str: ...
+    ``unfiltered``: run it without the build's pipeline selection
+    (``unfiltered_env``), to learn whether the build message or
+    ``QDB_PIPELINE_FILTER`` selected a part of the pipeline.
+    """
+
+    def run(self, command: str, unfiltered: bool = False) -> str: ...
 
 
 # ---------------------------------------------------------------------------
@@ -149,10 +154,22 @@ class RealAgent:
 
 GENERATE_PHASE = {"SNAPDEP_PHASE": "generate"}
 
+# How a build selects a part of its pipeline (qdb_pipeline.selection): the
+# variable first, else the build message read as YAML.
+PIPELINE_FILTER = "QDB_PIPELINE_FILTER"
+MESSAGE = "BUILDKITE_MESSAGE"
+
 
 def generator_env(env: Mapping[str, str]) -> dict[str, str]:
     """The environment of the generator: ``env`` with ``SNAPDEP_PHASE=generate``."""
     return {**env, **GENERATE_PHASE}
+
+
+def unfiltered_env(env: Mapping[str, str]) -> dict[str, str]:
+    """``env`` without a pipeline selection: no ``QDB_PIPELINE_FILTER``, an empty message."""
+    out = {k: v for k, v in env.items() if k != PIPELINE_FILTER}
+    out[MESSAGE] = ""
+    return out
 
 
 class ShellGenerator:
@@ -165,11 +182,11 @@ class ShellGenerator:
         self._cwd = cwd
         self._env = generator_env(os.environ if env is None else env)
 
-    def run(self, command: str) -> str:
+    def run(self, command: str, unfiltered: bool = False) -> str:
         p = subprocess.run(
             ["bash", "-c", command],
             cwd=self._cwd,
-            env=self._env,
+            env=unfiltered_env(self._env) if unfiltered else self._env,
             stdout=subprocess.PIPE,
             text=True,
             check=False,

@@ -47,6 +47,7 @@ from snapdep.jobs import (
     generate,
     job_from_env,
     seal,
+    selection_requested,
     shared_failure,
 )
 from snapdep.planner import PlanError
@@ -159,6 +160,21 @@ def test_rebuild_setting_rejects_unknown_values():
     assert job_from_env(environment(SNAPDEP_REBUILD="0")).rebuild == ""
 
 
+@pytest.mark.parametrize(
+    "env, expected",
+    [
+        ({}, False),
+        ({"QDB_PIPELINE_FILTER": "os: linux"}, True),
+        ({"QDB_PIPELINE_FILTER": " ", "BUILDKITE_MESSAGE": "{os: linux}"}, False),
+        ({"BUILDKITE_MESSAGE": "{os: linux}"}, True),
+        ({"BUILDKITE_MESSAGE": "QDB-1 - fix the parser (#12)"}, False),
+        ({"BUILDKITE_MESSAGE": "a: [unclosed"}, False),
+    ],
+)
+def test_selection_requested_follows_the_pipeline_selection_rule(env, expected):
+    assert selection_requested(env) is expected
+
+
 def test_job_needs_the_buildkite_environment():
     with pytest.raises(JobError, match="BUILDKITE_BUILD_ID"):
         job_from_env({"BUILDKITE_PIPELINE_SLUG": REST, "BUILDKITE_BRANCH": "master"})
@@ -219,6 +235,54 @@ def test_enter_not_a_version_build_when_a_gate_is_missing():
     assert_plain(w)
     assert "not a version build: no step build-windows-haswell" in w.logs[0]
     assert w.generator.commands and len(w.generator.commands) == 1
+
+
+FULL = FIXTURE + "- label: windows\n  key: build-windows-haswell\n  command: make\n"
+
+
+@pytest.mark.parametrize(
+    "selection",
+    [{"QDB_PIPELINE_FILTER": "os: linux"}, {"BUILDKITE_MESSAGE": "{os: linux}"}],
+)
+def test_enter_not_a_version_build_when_the_build_selects_a_part(selection):
+    p = plan()
+    w = World(store=stored_versions(version(p, REST, 70), version(p, DUCK, 5), version(p, QDB, 9)))
+    w.generator.unfiltered = FULL
+    assert run(enter, w, **selection) == 0
+    assert_plain(w)
+    assert "selects a part of the pipeline" in w.logs[0]
+    assert len(w.generator.commands) == 2
+
+
+def test_enter_builds_when_the_selection_changes_nothing():
+    p = plan()
+    w = World(store=stored_versions(version(p, DUCK, 5), version(p, QDB, 9)))
+    assert run(enter, w, BUILDKITE_MESSAGE="fix(rest): handle empty bodies") == 0
+    assert w.agent.meta_data[MODE] == "build"
+    assert len(w.generator.commands) == 2, "a mapping message is checked against no selection"
+
+
+def test_enter_runs_the_generator_once_without_a_selection():
+    p = plan()
+    w = World(store=stored_versions(version(p, DUCK, 5), version(p, QDB, 9)))
+    w.generator.unfiltered = FULL
+    assert run(enter, w, BUILDKITE_MESSAGE="snapshot dependency of x build 3") == 0
+    assert w.agent.meta_data[MODE] == "build"
+    assert len(w.generator.commands) == 1
+
+
+def test_enter_not_a_version_build_without_a_command_step():
+    w = World(output="steps:\n  - wait\n  - trigger: other\n")
+    assert run(enter, w) == 0
+    assert w.agent.meta_data[MODE] == "plain"
+    assert "no command step to gate a version on" in w.logs[0]
+
+
+def test_seal_refuses_an_empty_gate_list():
+    w = World(meta={MODE: "build", KEY: key(REST), PLAN: PLAN_ID, GATE_KEYS: "[]"})
+    with pytest.raises(JobError, match="without gates is not a version"):
+        run(seal, w)
+    assert find_version(w.store, REST, key(REST)) is None
 
 
 # ---------------------------------------------------------------------------
