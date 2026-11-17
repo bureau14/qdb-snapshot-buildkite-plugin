@@ -127,7 +127,8 @@ class RealAgent:
             return None
         _checked(o, [self._bin, *exists])
         get = ["meta-data", "get", key]
-        return _checked(self._agent(get), [self._bin, *get])
+        # The agent ends the value with a line end; the values set here have none.
+        return _checked(self._agent(get), [self._bin, *get]).rstrip("\r\n")
 
     def meta_data_set(self, key: str, value: str) -> None:
         args = ["meta-data", "set", key]

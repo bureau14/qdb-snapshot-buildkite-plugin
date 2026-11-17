@@ -41,6 +41,16 @@ def test_meta_data_get_present():
     assert run.calls[1] == (["buildkite-agent", "meta-data", "get", "snapdep-mode"], None)
 
 
+def test_meta_data_get_drops_the_line_end_the_agent_prints():
+    """``buildkite-agent meta-data get`` ends its output with a newline.
+
+    Before the fix fail read the mode as "build\\n", took it for not
+    ``build`` and recorded nothing (qdb-api-go build 447).
+    """
+    run = Script(OK, Outcome(0, "build\n", ""))
+    assert RealAgent(run).meta_data_get("snapdep-mode") == "build"
+
+
 def test_meta_data_get_failure_is_an_error_not_absent():
     with pytest.raises(AgentError, match="exited|failed"):
         RealAgent(Script(Outcome(1, "", "boom"))).meta_data_get("k")
