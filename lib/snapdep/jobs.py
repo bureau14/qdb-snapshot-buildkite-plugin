@@ -27,7 +27,14 @@ import yaml
 
 from . import annotation as notes
 from .agent import MESSAGE, PIPELINE_FILTER, Agent, Generator
-from .declaration import PATH, Declaration, Pipeline, generate_command, pipeline_entry
+from .declaration import (
+    PATH,
+    Declaration,
+    DeclarationError,
+    Pipeline,
+    generate_command,
+    pipeline_entry,
+)
 from .git import Git, github_repo
 from .pipeline import (
     Pin,
@@ -70,6 +77,11 @@ from .records import (
 from .store import Store, key_join
 
 Env = Mapping[str, str]
+
+# Reads and parses the build's declaration when called; None when there is no
+# file. Jobs call it only once they know they need it, so that a broken
+# declaration cannot stop plain mode.
+DeclarationSource = Callable[[], "Declaration | None"]
 
 ARRIVED = "snapdep-arrived"
 MODE = "snapdep-mode"
@@ -166,8 +178,13 @@ def rebuild_setting(env: Env) -> str:
 
 
 def job_from_env(env: Env) -> Job:
-    """The ``Job`` described by the Buildkite environment ``env``."""
+    """The ``Job`` described by the Buildkite environment ``env``.
+
+    Under ``SNAPDEP_DISABLE=1`` the other settings of the person are ignored,
+    so that a wrong one cannot stop the escape hatch.
+    """
     project = _required(env, "BUILDKITE_PIPELINE_SLUG")
+    disabled = env.get("SNAPDEP_DISABLE", "") == "1"
     return Job(
         project=project,
         branch=_required(env, "BUILDKITE_BRANCH"),
@@ -179,8 +196,8 @@ def job_from_env(env: Env) -> Job:
             pipeline=project,
         ),
         plan_id=env.get("SNAPDEP_PLAN") or None,
-        rebuild=rebuild_setting(env),
-        disabled=env.get("SNAPDEP_DISABLE", "") == "1",
+        rebuild="" if disabled else rebuild_setting(env),
+        disabled=disabled,
         plugins=env.get("BUILDKITE_PLUGINS"),
         selection=selection_requested(env),
     )
@@ -189,15 +206,6 @@ def job_from_env(env: Env) -> Job:
 # ---------------------------------------------------------------------------
 # Decisions
 # ---------------------------------------------------------------------------
-
-
-def plain_reason(job: Job, entry: Pipeline | None) -> str | None:
-    """Why this build runs in plain mode without asking the store; None when it does not."""
-    if job.disabled:
-        return "SNAPDEP_DISABLE=1"
-    if entry is None:
-        return f"{PATH} has no entry for {job.project}"
-    return None
 
 
 def partial_reason(
@@ -418,14 +426,37 @@ def upload_real_pipeline(
 # ---------------------------------------------------------------------------
 
 
-def enter(job: Job, decl: Declaration | None, fx: Effects) -> int:
+def switched_off(job: Job, fx: Effects) -> str | None:
+    """Why a person switched snapdep off for this build; None when they did not.
+
+    ``SNAPDEP_DISABLE=1`` first, without touching the store, then the
+    ``disabled`` object.
+    """
+    if job.disabled:
+        return "SNAPDEP_DISABLE=1"
+    if is_disabled(fx.store):
+        return "snapdep is disabled in the store"
+    return None
+
+
+def entry_if_readable(job: Job, read: DeclarationSource, fx: Effects) -> Pipeline | None:
+    """This pipeline's entry, for its generator command; None when it cannot be read."""
+    try:
+        return pipeline_entry(read(), job.project)
+    except DeclarationError as exc:
+        fx.log(f"ignored, snapdep is off: {exc}")
+        return None
+
+
+def enter(job: Job, read: DeclarationSource, fx: Effects) -> int:
     """The first gate job: plain, reuse, a shared failure, or build (with triggers first)."""
+    off = switched_off(job, fx)
+    if off is not None:
+        return run_plain(None, entry_if_readable(job, read, fx), off, fx)
+    decl = read()
     entry = pipeline_entry(decl, job.project)
-    reason = plain_reason(job, entry)
-    if reason is None and is_disabled(fx.store):
-        reason = "snapdep is disabled in the store"
-    if reason is not None or entry is None or decl is None:
-        return run_plain(None, entry, reason or "no declaration", fx)
+    if entry is None or decl is None:
+        return run_plain(None, None, f"{PATH} has no entry for {job.project}", fx)
 
     command = generate_command(entry)
     text = fx.generator.run(command)
@@ -483,9 +514,9 @@ def enter(job: Job, decl: Declaration | None, fx: Effects) -> int:
 # ---------------------------------------------------------------------------
 
 
-def generate(job: Job, decl: Declaration | None, fx: Effects) -> int:
+def generate(job: Job, read: DeclarationSource, fx: Effects) -> int:
     """After the triggers: fail when a dependency has no version, else upload the pipeline."""
-    entry = build_entry(job, decl)
+    entry = build_entry(job, read())
     plan = build_plan(job, fx)
     own = plan.nodes[job.project]
     versions = lookup_versions(fx.store, plan, list(own.deps))
@@ -508,7 +539,7 @@ def generate(job: Job, decl: Declaration | None, fx: Effects) -> int:
 # ---------------------------------------------------------------------------
 
 
-def fail(job: Job, decl: Declaration | None, fx: Effects) -> int:
+def fail(job: Job, read: DeclarationSource, fx: Effects) -> int:
     """Records the failure of this build when a gate did not pass. Always exits 0."""
     mode = fx.agent.meta_data_get(MODE)
     if mode != BUILD:
@@ -547,7 +578,7 @@ def missing_variants(s: Store, job: Job, label: str, produces: Sequence[str]) ->
     ]
 
 
-def seal(job: Job, decl: Declaration | None, fx: Effects) -> int:
+def seal(job: Job, read: DeclarationSource, fx: Effects) -> int:
     """Records this build as the version of its key when every gate passed."""
     mode = fx.agent.meta_data_get(MODE)
     if mode != BUILD:
@@ -562,7 +593,7 @@ def seal(job: Job, decl: Declaration | None, fx: Effects) -> int:
     if failed:
         fx.log(f"not a version: {', '.join(f'{s.key} {s.outcome}' for s in failed)}")
         return 0
-    entry = build_entry(job, decl)
+    entry = build_entry(job, read())
     plan = build_plan(job, fx)
     own = plan.nodes[job.project]
     if own.key != key:

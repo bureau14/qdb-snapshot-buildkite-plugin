@@ -131,6 +131,36 @@ def test_fail_and_seal_outside_build_mode_exit_0(job_effects):
     assert cli.main(["seal"], JOB_ENV) == 0
 
 
+BROKEN_DECL = DECL.replace("depends:", "depend:")
+
+
+@pytest.mark.parametrize(
+    "env",
+    [
+        {"SNAPDEP_DISABLE": "1"},
+        {"SNAPDEP_DISABLE": "1", "SNAPDEP_REBUILD": "yes"},
+        {"SNAPDEP_REBUILD": "all"},
+    ],
+)
+def test_switched_off_build_runs_plain_with_a_broken_declaration(job_effects, checkout, env):
+    agent, store = job_effects
+    store.put("_snapdep/v1/disabled", b"")
+    (checkout / PATH).write_text(BROKEN_DECL)
+    if "SNAPDEP_DISABLE" in env:
+        store.unreadable.add("_snapdep/v1/disabled")
+    assert cli.main(["enter"], {**JOB_ENV, **env}) == 0
+    assert agent.meta_data["snapdep-mode"] == "plain"
+    assert len(agent.uploads) == 2
+    assert cli.main(["fail"], {**JOB_ENV, **env}) == 0
+    assert cli.main(["seal"], {**JOB_ENV, **env}) == 0
+
+
+def test_a_broken_declaration_fails_enter_when_snapdep_is_on(job_effects, checkout, capsys):
+    (checkout / PATH).write_text(BROKEN_DECL)
+    assert cli.main(["enter"], JOB_ENV) == 1
+    assert "unknown field(s) depend" in capsys.readouterr().err
+
+
 def test_job_errors_are_one_line_and_exit_1(job_effects, capsys):
     agent, _ = job_effects
     agent.meta_data["snapdep-mode"] = "build"

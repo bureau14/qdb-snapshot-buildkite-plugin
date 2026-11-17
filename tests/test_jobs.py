@@ -123,7 +123,8 @@ class World:
 
 
 def run(job_fn, w, decl=None, **env):
-    return job_fn(job_from_env(environment(**env)), decl or declaration(), w.fx)
+    d = decl or declaration()
+    return job_fn(job_from_env(environment(**env)), lambda: d, w.fx)
 
 
 def stored_versions(*vs):
@@ -225,7 +226,7 @@ def test_enter_plain_when_the_pipeline_has_no_entry():
 
 def test_enter_plain_without_a_declaration():
     w = World()
-    assert enter(job_from_env(environment()), None, w.fx) == 0
+    assert enter(job_from_env(environment()), lambda: None, w.fx) == 0
     assert_plain(w)
 
 
@@ -687,7 +688,7 @@ def test_root_python_closure_in_plan_annotation_lists_every_project():
     w = World(store=MemoryStore(objects(p)), checkout=sha(PYTHON))
     decl = declaration(slug=PYTHON, deps=(REST, QDB))
     env = environment(BUILDKITE_PIPELINE_SLUG=PYTHON)
-    assert enter(job_from_env(env), decl, w.fx) == 0
+    assert enter(job_from_env(env), lambda: decl, w.fx) == 0
     note = w.agent.annotations[0][0]
     for project in (QDB, DUCK, REST, PYTHON):
         assert f"| {project} |" in note

@@ -26,9 +26,19 @@ from dataclasses import dataclass
 from typing import Callable
 
 from .agent import AgentError, GeneratorError, RealAgent, ShellGenerator
-from .declaration import PATH, Declaration, DeclarationError, read_declaration
+from .declaration import PATH, DeclarationError, read_declaration
 from .git import Git, GitError, RealGit, github_repo
-from .jobs import Effects, Job, JobError, enter, fail, generate, job_from_env, seal
+from .jobs import (
+    DeclarationSource,
+    Effects,
+    Job,
+    JobError,
+    enter,
+    fail,
+    generate,
+    job_from_env,
+    seal,
+)
 from .pipeline import PipelineError
 from .planner import PlanError, Root, make_plan
 from .records import RecordError, plan_to_dict
@@ -160,14 +170,16 @@ def configure_job(p: argparse.ArgumentParser, env: Env) -> None:
     p.add_argument("--declaration", default=PATH, help=f"path of the declaration (default: {PATH})")
 
 
-def job_command(name: str, help: str, job: Callable[[Job, Declaration | None, Effects], int]):
-    """A ``Command`` that runs ``job`` in the current Buildkite job."""
+def job_command(name: str, help: str, job: Callable[[Job, DeclarationSource, Effects], int]):
+    """A ``Command`` that runs ``job`` in the current Buildkite job.
+
+    The job reads the declaration itself, when it needs it.
+    """
 
     def run(args: argparse.Namespace, env: Env) -> int:
         j = job_from_env(env)
-        decl = read_declaration(args.declaration)
         with RealGit(log=log_stderr) as git:
-            return job(j, decl, real_effects(env, git))
+            return job(j, lambda: read_declaration(args.declaration), real_effects(env, git))
 
     return Command(name, help, configure_job, run)
 
