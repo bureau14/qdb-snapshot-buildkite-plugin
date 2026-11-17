@@ -3,7 +3,8 @@
 Specification sections 5.2 (the plan, reuse, a shared failure), 5.4 (failed
 steps) and 5.6 (a dependency without a version). Every annotation is rendered
 by a pure function from records; the only store access is ``trace_missing``,
-which follows ``caused_by`` down the failure records.
+which follows ``caused_by`` down the failure records, preferring at each
+level the failure recorded under the plan of the build that asks.
 
 Contexts: ``snapdep-plan`` for the plan table, ``snapdep`` for everything else,
 so that a later annotation of a build replaces an earlier one.
@@ -98,11 +99,16 @@ def trace_failure(s: Store, p: Plan, f: Failure, seen: frozenset = frozenset()) 
 
 
 def trace_missing(s: Store, p: Plan, c: Cause, seen: frozenset = frozenset()) -> Missing:
-    """``Missing`` for dependency ``c``: its latest failure, and so on down ``caused_by``."""
+    """``Missing`` for dependency ``c``: its failure, and so on down ``caused_by``.
+
+    Its latest failure under plan ``p`` (the build of this chain), else its
+    latest failure.
+    """
     failures = list_failures(s, c.project, c.key)
     if not failures:
         return Missing(c.project, c.key, _commit_of(p, c.project), None)
-    return trace_failure(s, p, failures[-1], seen)
+    of_plan = [f for f in failures if f.plan == p.id]
+    return trace_failure(s, p, (of_plan or failures)[-1], seen)
 
 
 def _subject(m: Missing) -> str:
@@ -171,16 +177,21 @@ def dependency_failure_text(project: str, build_number: int, missing: Sequence[M
     return "\n".join(lines)
 
 
-def shared_failure_text(m: Missing) -> str:
-    """This build waited at the gate behind the build of ``m.failure``, which failed."""
+def shared_failure_text(m: Missing, *, same_chain: bool) -> str:
+    """This build's key failed in the build of ``m.failure``, so this build does not build it.
+
+    ``same_chain``: that build ran under this build's plan (a key is built at
+    most once per chain); otherwise this build waited behind it at the gate.
+    """
     f = m.failure
     assert f is not None
     builds = failed_builds(m) or [(f.build.pipeline, f.build.number)]
+    when = "earlier in this chain" if same_chain else "while this build waited for it"
     return "\n".join(
         [
             "Snapshot build failed in another build",
             "",
-            f"{_subject(m)} failed in build {f.build.number} while this build waited for it:",
+            f"{_subject(m)} failed in build {f.build.number} {when}:",
             *failure_lines(m, 2),
             "",
             f"To retry: retry the failed job in {_builds_text(builds)}. When it passes,",

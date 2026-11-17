@@ -16,6 +16,16 @@ and from the build meta-data written by earlier jobs of the same build:
   real pipeline is uploaded;
 - ``snapdep-uploaded-enter``, ``snapdep-uploaded-generate``: that job's
   documents are in the build; a retry of the job uploads nothing.
+
+Within one plan (one chain) a key is built at most once. Every failure record
+names the plan its build ran under (fail, generate, seal and enter write it).
+A key counts as built and failed in a chain when a build of that plan ran its
+work and recorded failed steps; a build that stopped for a dependency (only
+``caused_by``) did not build it. enter takes such a failure of its own key as
+its own, whenever it was recorded, unless the build carries
+``SNAPDEP_REBUILD``; and it does not trigger a dependency with such a failure:
+it fails as generate does for a dependency without a version. ``rebuild:
+all`` changes neither.
 """
 
 from __future__ import annotations
@@ -320,6 +330,52 @@ def near_arrival(
     ]
 
 
+def carries_rebuild(job: Job) -> bool:
+    """This build carries ``SNAPDEP_REBUILD`` (``1`` or ``all``): a person decided it builds."""
+    return job.rebuild != ""
+
+
+def built_and_failed(f: Failure) -> bool:
+    """True when the build of ``f`` ran the work of its key: it has failed steps.
+
+    A record with only ``caused_by`` is a build that stopped for a dependency
+    without a version; its key was not built.
+    """
+    return bool(f.failed_steps)
+
+
+def failed_in_chain(failures: Sequence[Failure], plan_id: str, own_build: str) -> Failure | None:
+    """The latest failure of another build of the key that built it under plan ``plan_id``.
+
+    Within one plan a key is built at most once: such a failure is taken
+    regardless of when it was recorded, and also when its failed steps only
+    soft-failed (the key was built in this chain and is not a version). Not
+    a record with only ``caused_by`` (``built_and_failed``), so that a
+    rebuild of that build, after its dependency was healed, builds. Records
+    without a plan (written before the field existed) never match.
+    ``failures`` are oldest first. None when there is none.
+    """
+    same = [
+        f
+        for f in failures
+        if f.plan == plan_id and f.build.uuid != own_build and built_and_failed(f)
+    ]
+    return same[-1] if same else None
+
+
+def failed_dependencies(
+    p: Plan, stale: Sequence[str], failures: Mapping[str, Sequence[Failure]], own_build: str
+) -> dict[str, Failure]:
+    """The stale dependencies that a build of plan ``p`` built already and that failed.
+
+    They are not triggered again. Under ``rebuild: all`` too: the chain
+    builds every key once, and a failed one is not built a second time.
+    ``failures``: the failure records of each stale dependency's key.
+    """
+    found = {d: failed_in_chain(failures.get(d, ()), p.id, own_build) for d in stale}
+    return {d: f for d, f in found.items() if f is not None}
+
+
 def parse_arrived(v: str | None) -> float | None:
     """``snapdep-arrived`` as epoch seconds; None when it is not set."""
     if v is None or not v.strip():
@@ -336,6 +392,7 @@ def plan_actions(
     versions: Mapping[str, Version | None],
     forced: bool,
     stale: Sequence[str],
+    failed_deps: Mapping[str, Failure],
 ) -> dict[str, str]:
     """What will happen to each project of ``project``'s closure, for the plan annotation."""
 
@@ -349,6 +406,9 @@ def plan_actions(
             return f"reuse [build {v.build.number}]({v.build.url})"
         if q == project:
             return "build in this build"
+        if q in failed_deps:
+            f = failed_deps[q].build
+            return f"failed in this chain in [build {f.number}]({f.url}): not built again"
         if q in stale:
             return f"build through step `{trigger_key(q)}`"
         return "build in the chain"
@@ -396,6 +456,11 @@ def manifest_path(project: str, label: str, variant: str, build_id: str) -> str:
 def lookup_versions(s: Store, p: Plan, projects: Sequence[str]) -> dict[str, Version | None]:
     """The version of every project of ``projects`` that is not opaque; None when there is none."""
     return {q: None if p.nodes[q].opaque else find_version(s, q, p.nodes[q].key) for q in projects}
+
+
+def lookup_failures(s: Store, p: Plan, projects: Sequence[str]) -> dict[str, list[Failure]]:
+    """The failure records of the key of every project of ``projects``, oldest first."""
+    return {q: list_failures(s, q, p.nodes[q].key) for q in projects}
 
 
 def obtain_plan(job: Job, decl: Declaration, fx: Effects) -> Plan:
@@ -493,6 +558,21 @@ def run_plain(job: Job, text: str | None, entry: Pipeline | None, reason: str, f
     return 0
 
 
+def fail_for_dependencies(job: Job, p: Plan, missing: Sequence[notes.Missing], fx: Effects) -> int:
+    """Record this build's failure, caused by the dependencies ``missing``, and annotate it.
+
+    ``missing``: the direct dependencies that have no version, each traced
+    down its failure records (section 5.6). Returns the exit status, 1.
+    """
+    own = p.nodes[job.project]
+    causes = [Cause(m.project, m.key) for m in missing]
+    f = failure_record(job.project, own.key, p.id, job.build, [], causes, fx.clock())
+    write_failure(fx.store, f)
+    text = notes.dependency_failure_text(job.project, job.build.number, missing)
+    fx.agent.annotate(notes.preformatted(text), "error", notes.CONTEXT)
+    return 1
+
+
 def upload_real_pipeline(
     step: str,
     job: Job,
@@ -543,7 +623,15 @@ def entry_if_readable(job: Job, read: DeclarationSource, fx: Effects) -> Pipelin
 
 
 def enter(job: Job, read: DeclarationSource, fx: Effects) -> int:
-    """The first gate job: plain, reuse, a shared failure, or build (with triggers first)."""
+    """The first gate job: plain, reuse, a shared failure, or build (with triggers first).
+
+    Within one plan a key is built at most once (``failed_in_chain``). A
+    failure of this build's key built under its own plan is shared regardless
+    of time, unless this build carries ``SNAPDEP_REBUILD``. A stale dependency
+    built and failed under this plan is not triggered again: the build fails
+    as generate does for a dependency without a version, and uploads nothing
+    (spec 5.7 rule 1: the build ends, and the gate with it).
+    """
     if already_uploaded(ENTER, fx):
         return 0
     off = switched_off(job, fx)
@@ -566,8 +654,10 @@ def enter(job: Job, read: DeclarationSource, fx: Effects) -> int:
     own = plan.nodes[job.project]
     versions = lookup_versions(fx.store, plan, dependencies_first(plan, job.project))
     stale = stale_dependencies(plan, job.project, versions)
+    failures_of_stale = lookup_failures(fx.store, plan, stale)
+    failed_deps = failed_dependencies(plan, stale, failures_of_stale, job.build.uuid)
     forced = self_forced(job)
-    actions = plan_actions(plan, job.project, versions, forced, stale)
+    actions = plan_actions(plan, job.project, versions, forced, stale, failed_deps)
     fx.agent.annotate(notes.plan_annotation(plan, job.project, actions), "info", notes.PLAN_CONTEXT)
 
     v = versions[job.project]
@@ -582,18 +672,25 @@ def enter(job: Job, read: DeclarationSource, fx: Effects) -> int:
     if arrived is None:
         fx.log(f"meta-data {ARRIVED} is not set: is the shim in pipeline.py?")
     failures = list_failures(fx.store, job.project, own.key)
+    in_chain = None if carries_rebuild(job) else failed_in_chain(failures, plan.id, job.build.uuid)
+    failed = in_chain or shared_failure(failures, arrived, job.build.uuid)
+    if failed is not None:
+        traced = notes.trace_failure(fx.store, plan, failed)
+        note = notes.shared_failure_text(traced, same_chain=in_chain is not None)
+        fx.agent.annotate(notes.preformatted(note), "error", notes.CONTEXT)
+        fx.log(f"{own.key} failed in build {failed.build.number} ({failed.build.url})")
+        return 1
+
+    if failed_deps:
+        traced_deps = [notes.trace_failure(fx.store, plan, f) for f in failed_deps.values()]
+        fx.log(f"failed in this chain, not built again: {', '.join(failed_deps)}")
+        return fail_for_dependencies(job, plan, traced_deps, fx)
+
     for f in near_arrival(failures, arrived, job.build.uuid):
         fx.log(
             f"build {f.build.number} failed {f.recorded_at - (arrived or 0):.1f} s after this "
             f"build arrived, within the {CLOCK_SKEW:.0f} s clock margin: building again"
         )
-    failed = shared_failure(failures, arrived, job.build.uuid)
-    if failed is not None:
-        note = notes.shared_failure_text(notes.trace_failure(fx.store, plan, failed))
-        fx.agent.annotate(notes.preformatted(note), "error", notes.CONTEXT)
-        fx.log(f"{own.key} failed in build {failed.build.number} ({failed.build.url})")
-        return 1
-
     plugin = own_plugin_reference(job.plugins) if stale else ""
     write_holder(fx.store, holder_record(job.project, own.key, plan.id, job.build, fx.clock()))
     fx.agent.meta_data_set(KEY, own.key)
@@ -625,14 +722,9 @@ def generate(job: Job, read: DeclarationSource, fx: Effects) -> int:
     versions = lookup_versions(fx.store, plan, list(own.deps))
     missing = stale_dependencies(plan, job.project, versions)
     if missing:
-        causes = [Cause(d, plan.nodes[d].key) for d in missing]
-        f = failure_record(job.project, own.key, plan.id, job.build, [], causes, fx.clock())
-        write_failure(fx.store, f)
-        traced = [notes.trace_missing(fx.store, plan, c) for c in causes]
-        text = notes.dependency_failure_text(job.project, job.build.number, traced)
-        fx.agent.annotate(notes.preformatted(text), "error", notes.CONTEXT)
+        traced = [notes.trace_missing(fx.store, plan, Cause(d, plan.nodes[d].key)) for d in missing]
         fx.log(f"no version for {', '.join(missing)}")
-        return 1
+        return fail_for_dependencies(job, plan, traced, fx)
     doc = assign_keys(parse_pipeline(fx.generator.run(generate_command(entry))))
     return upload_real_pipeline(GENERATE, job, entry, plan, doc, versions, fx)
 

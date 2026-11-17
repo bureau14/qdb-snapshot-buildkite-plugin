@@ -1,6 +1,19 @@
 from __future__ import annotations
 
-from plans import DUCK, PYTHON, QDB, REST, build, failed, key, objects, plan, sha, version
+from plans import (
+    DUCK,
+    PLAN_ID,
+    PYTHON,
+    QDB,
+    REST,
+    build,
+    failed,
+    key,
+    objects,
+    plan,
+    sha,
+    version,
+)
 
 from snapdep.annotation import (
     dependency_failure_text,
@@ -81,7 +94,7 @@ def test_trace_stops_at_a_cycle_of_records():
 def test_shared_failure_text():
     s = chain_store()
     f = failed(REST, key(REST), build(REST, 88), {"lint": "hard_failed"}, at=9.0)
-    text = shared_failure_text(trace_failure(s, plan(), f))
+    text = shared_failure_text(trace_failure(s, plan(), f), same_chain=False)
     assert text.splitlines()[:5] == [
         "Snapshot build failed in another build",
         "",
@@ -91,6 +104,17 @@ def test_shared_failure_text():
         "    step lint: hard_failed",
     ]
     assert "retry the failed job in qdb-api-rest 88" in text
+    chain = shared_failure_text(trace_failure(s, plan(), f), same_chain=True)
+    assert f"({key(REST)}) failed in build 88 earlier in this chain:" in chain
+
+
+def test_trace_prefers_the_failure_of_the_plan_that_asks():
+    # Another chain failed the same key later; the chain's own build is the pointer.
+    s = MemoryStore(objects(plan()))
+    mine = failed(QDB, key(QDB), build(QDB, 1), {"a": "hard_failed"}, at=1.0, plan_id=PLAN_ID)
+    write_failure(s, mine)
+    write_failure(s, failed(QDB, key(QDB), build(QDB, 2), {"b": "hard_failed"}, at=2.0))
+    assert trace_missing(s, plan(), Cause(QDB, key(QDB))).failure.build.number == 1
 
 
 def test_failed_steps_text():

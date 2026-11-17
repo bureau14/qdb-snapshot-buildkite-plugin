@@ -14,6 +14,7 @@ import pytest
 import yaml
 from plans import (
     DUCK,
+    OTHER_PLAN_ID,
     PLAN_ID,
     PLUGIN_COMMIT,
     PLUGINS,
@@ -56,6 +57,7 @@ from snapdep.planner import PlanError
 from snapdep.records import (
     DISABLED_PATH,
     REBUILD_ALL,
+    Cause,
     decode,
     failure_from_dict,
     failure_path,
@@ -352,6 +354,176 @@ def test_enter_without_arrival_time_builds_and_says_so():
     write_failure(w.store, failed(REST, key(REST), build(REST, 1), {"x": "hard_failed"}))
     assert run(enter, w) == 0
     assert any("snapdep-arrived is not set" in m for m in w.logs)
+
+
+# ---------------------------------------------------------------------------
+# enter: within one plan a key is built at most once
+# ---------------------------------------------------------------------------
+
+QDB_BUILD = build(QDB, 4300, "uuid-quasardb-build-4300")
+QDB_GATE = "build-linux-core2-release"
+
+
+def env_of(b):
+    return {
+        "BUILDKITE_PIPELINE_SLUG": b.pipeline,
+        "BUILDKITE_BUILD_ID": b.uuid,
+        "BUILDKITE_BUILD_NUMBER": str(b.number),
+        "BUILDKITE_BUILD_URL": b.url,
+    }
+
+
+def quasardb_build_fails(store, plan_id):
+    """The fail job of quasardb-build 4300, triggered under ``plan_id``: its gate failed."""
+    meta = {MODE: "build", KEY: key(QDB), PLAN: plan_id, GATE_KEYS: json.dumps([QDB_GATE])}
+    w = World(store=store, meta=meta, outcomes={QDB_GATE: "hard_failed"}, checkout=sha(QDB))
+    assert run(fail, w, **env_of(QDB_BUILD), SNAPDEP_PLAN=plan_id) == 0
+
+
+def assert_stopped_without_upload(w):
+    assert not w.agent.uploads
+    assert MODE not in w.agent.meta_data
+    assert w.store.get(holder_path(REST, key(REST), REST_BUILD.uuid)) is None
+
+
+def test_diamond_a_dependency_that_failed_in_the_chain_is_not_triggered_again():
+    # python -> quasardb-build and python -> rest -> quasardb-build. python's
+    # enter triggers quasardb-build, then rest after it; the soft-failed
+    # quasardb-build trigger lets rest's trigger run. rest must not trigger
+    # quasardb-build a second time in the same chain.
+    store = stored_versions(version(plan(), DUCK, 5))
+    python = World(store=store, checkout=sha(PYTHON))
+    python_build = build(PYTHON, 512, PLAN_ID)
+    python_decl = declaration(slug=PYTHON, deps=(REST, QDB))
+    assert run(enter, python, python_decl, **env_of(python_build)) == 0
+    triggers = {s["key"]: s for s in python.uploaded(0)["steps"]}
+    assert triggers["snapdep-dep-qdb-api-rest"]["depends_on"] == ["snapdep-dep-quasardb-build"]
+
+    quasardb_build_fails(store, PLAN_ID)
+
+    rest = World(store=store)
+    assert run(enter, rest) == 1
+    assert_stopped_without_upload(rest)
+    [f] = list_failures(store, REST, key(REST))
+    assert f.plan == PLAN_ID and f.build == REST_BUILD and f.failed_steps == ()
+    assert [(c.project, c.key) for c in f.caused_by] == [(QDB, key(QDB))]
+    plan_note = rest.agent.annotations[0][0]
+    assert "failed in this chain in [build 4300](https://ci/quasardb-build/4300)" in plan_note
+    body, style, context = rest.agent.annotations[-1]
+    assert (style, context) == ("error", "snapdep")
+    assert "qdb-api-rest build 77 was not built, because:" in body
+    assert f"quasardb-build @ {sha(QDB)[:10]} ({key(QDB)}) has no version." in body
+    assert f"step {QDB_GATE}: hard_failed" in body
+    assert "To retry: retry the failed job in quasardb-build 4300. When it passes," in body
+
+    python_generate = World(
+        store=store, meta={MODE: "build", KEY: key(PYTHON), PLAN: PLAN_ID}, checkout=sha(PYTHON)
+    )
+    assert run(generate, python_generate, python_decl, **env_of(python_build)) == 1
+    chain = python_generate.agent.annotations[-1][0]
+    assert "FAILED in build 77: https://ci/qdb-api-rest/77" in chain
+    assert "caused by quasardb-build" in chain and "FAILED in build 4300" in chain
+
+
+@pytest.mark.parametrize("plan_id", [OTHER_PLAN_ID, None], ids=["other-plan", "no-plan-field"])
+def test_diamond_a_dependency_that_failed_in_another_chain_is_triggered(plan_id):
+    store = stored_versions(version(plan(), DUCK, 5))
+    quasardb_build_fails(store, plan_id)
+    rest = World(store=store)
+    assert run(enter, rest) == 0
+    assert_build_mode(rest)
+    assert rest.step_keys(0) == ["snapdep-dep-quasardb-build", "snapdep-generate"]
+
+
+def test_a_dependency_that_failed_in_the_chain_stops_a_forced_build_too():
+    # SNAPDEP_REBUILD=1 forces this build's own key; its dependencies are
+    # reused as always, and one that failed in the chain is not built again.
+    store = stored_versions(version(plan(), DUCK, 5))
+    quasardb_build_fails(store, PLAN_ID)
+    rest = World(store=store)
+    assert run(enter, rest, SNAPDEP_REBUILD="1") == 1
+    assert_stopped_without_upload(rest)
+
+
+def test_rebuild_all_does_not_build_a_failed_dependency_a_second_time():
+    # The old version of quasardb-build does not count under rebuild all, and
+    # its forced rebuild in this chain failed: rest fails, it does not retrigger.
+    p = plan(rebuild=REBUILD_ALL)
+    store = MemoryStore(
+        objects(p, [version(p, QDB, 9, sealed=T0 - 100), version(p, DUCK, 5, sealed=T0 + 30)])
+    )
+    quasardb_build_fails(store, PLAN_ID)
+    rest = World(store=store)
+    assert run(enter, rest) == 1
+    assert_stopped_without_upload(rest)
+
+
+def own_key_failed(store, plan_id, at, steps=None):
+    other = build(REST, 76, "uuid-rest-76")
+    f = failed(REST, key(REST), other, steps or {"lint": "hard_failed"}, at=at, plan_id=plan_id)
+    write_failure(store, f)
+
+
+@pytest.mark.parametrize("steps", [{"lint": "hard_failed"}, {"lint": "soft_failed"}])
+def test_child_does_not_build_a_key_that_failed_earlier_in_its_chain(steps):
+    # rest 76 of the same plan failed before this build arrived: the time rule
+    # would build again; the chain rule does not, also after a soft failure.
+    p = plan()
+    w = World(store=stored_versions(version(p, DUCK, 5), version(p, QDB, 9)))
+    own_key_failed(w.store, PLAN_ID, ARRIVED_AT - 100, steps)
+    assert run(enter, w) == 1
+    assert_stopped_without_upload(w)
+    body, style, context = w.agent.annotations[-1]
+    assert (style, context) == ("error", "snapdep")
+    assert f"({key(REST)}) failed in build 76 earlier in this chain:" in body
+    assert "FAILED in build 76: https://ci/qdb-api-rest/76" in body
+
+
+@pytest.mark.parametrize("rebuild", ["1", "all"])
+def test_a_build_that_carries_snapdep_rebuild_builds_a_key_that_failed_in_its_chain(rebuild):
+    p = plan()
+    w = World(store=stored_versions(version(p, DUCK, 5), version(p, QDB, 9)))
+    own_key_failed(w.store, PLAN_ID, ARRIVED_AT - 100)
+    assert run(enter, w, SNAPDEP_REBUILD=rebuild) == 0
+    assert_build_mode(w)
+
+
+def test_a_rebuild_of_a_build_that_stopped_for_a_dependency_builds_once_it_was_healed():
+    # rest 76 of this chain stopped because quasardb-build had no version (a
+    # record with only caused_by: rest was not built). quasardb-build was
+    # healed, and a person rebuilt rest 76: the rebuild carries the same
+    # SNAPDEP_PLAN and must build.
+    p = plan()
+    w = World(store=stored_versions(version(p, DUCK, 5), version(p, QDB, 9)))
+    cause = [Cause(QDB, key(QDB))]
+    stopped = failed(REST, key(REST), build(REST, 76), {}, cause, ARRIVED_AT - 100, PLAN_ID)
+    write_failure(w.store, stopped)
+    assert run(enter, w) == 0
+    assert_build_mode(w)
+
+
+def test_a_dependency_that_only_stopped_for_its_own_dependency_is_triggered():
+    # qdb-duck's build of this chain was not built (it stopped for
+    # quasardb-build, since healed): duck was never built in this chain.
+    p = plan()
+    store = stored_versions(version(p, QDB, 9))
+    cause = [Cause(QDB, key(QDB))]
+    write_failure(store, failed(DUCK, key(DUCK), build(DUCK, 31), {}, cause, plan_id=PLAN_ID))
+    w = World(store=store)
+    assert run(enter, w) == 0
+    assert w.step_keys(0) == ["snapdep-dep-qdb-duck", "snapdep-generate"]
+
+
+def test_retried_enter_is_not_stopped_by_its_own_failure():
+    # This build's enter failed for a dependency of the chain; the dependency
+    # was healed (retried and sealed) and the person retries this enter.
+    p = plan()
+    w = World(store=stored_versions(version(p, DUCK, 5), version(p, QDB, 9)))
+    write_failure(
+        w.store, failed(REST, key(REST), REST_BUILD, {}, [Cause(QDB, key(QDB))], plan_id=PLAN_ID)
+    )
+    assert run(enter, w, BUILDKITE_RETRY_COUNT="1") == 0
+    assert_build_mode(w)
 
 
 # ---------------------------------------------------------------------------
