@@ -1,90 +1,10 @@
 #!/usr/bin/env bash
 # The command of a snapshot gate job: python -m snapdep <step>.
 #
-# Creates a virtualenv inside the plugin directory once per plugin checkout
-# (lib/requirements.txt), then runs the step given by the plugin option
-# `step` in the build's checkout. Linux only: the gate jobs run on the
-# default queue.
-#
-# Sourcing this file defines its functions without running main (tests).
+# The functions are in lib/hook.bash. The agent sources this file through
+# its hook wrapper, so it must run main unconditionally.
 set -euo pipefail
 
-PLUGIN_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-VENV_DIR="${PLUGIN_DIR}/.venv"
-READY_MARK=".snapdep-ready"
-READY="${VENV_DIR}/${READY_MARK}"
-REQUIREMENTS="${PLUGIN_DIR}/lib/requirements.txt"
-STEP="${BUILDKITE_PLUGIN_QDB_SNAPSHOT_STEP:-}"
-
-fail() {
-  echo "+++ :rotating_light: qdb-snapshot: $*"
-  exit 1
-}
-
-# True when $1 is a Python interpreter of version 3.9 or later.
-is_python39() {
-  local check="import sys; sys.exit(0 if sys.version_info >= (3, 9) else 1)"
-  "$1" -c "${check}" &>/dev/null
-}
-
-# Python 3.9 or later, found the way the qdb-artifacts plugin finds python3:
-# the agent's QDB_CICD_AGENT_PYTHON3 first, then python3 or python on PATH.
-find_python3() {
-  local cmd
-  for cmd in "${QDB_CICD_AGENT_PYTHON3:-}" python3 python; do
-    if [[ -n "${cmd}" ]] && command -v "${cmd}" &>/dev/null && is_python39 "${cmd}"; then
-      echo "${cmd}"
-      return
-    fi
-  done
-}
-
-# A complete virtualenv in directory $2, made with interpreter $1.
-build_venv() {
-  "$1" -m venv "$2"
-  "$2/bin/python" -m pip install --quiet --retries 3 -r "${REQUIREMENTS}"
-  touch "$2/${READY_MARK}"
-}
-
-# Move the complete virtualenv $2 to VENV_DIR in one rename. A rename onto
-# a virtualenv another job moved there first fails; that one is used, and $2
-# (this job's own directory) is removed. An existing VENV_DIR is never removed.
-place_venv() {
-  local rename="import os, sys; os.rename(sys.argv[1], sys.argv[2])"
-  if ! "$1" -c "${rename}" "$2" "${VENV_DIR}" 2>/dev/null; then
-    rm -rf "$2"
-  fi
-  [[ -f "${READY}" ]] || fail "${VENV_DIR} exists but is not a complete virtualenv; remove it"
-}
-
-# Build the virtualenv next to the final place and move it in, so that two
-# jobs on one host never see a half-installed one.
-ensure_venv() {
-  local python3="$1"
-  [[ -f "${READY}" ]] && return
-  local tmp
-  tmp="$(mktemp -d "${PLUGIN_DIR}/.venv-XXXXXX")"
-  echo "~~~ :python: Setting up the qdb-snapshot plugin"
-  build_venv "${python3}" "${tmp}"
-  place_venv "${python3}" "${tmp}"
-}
-
-main() {
-  [[ "$(uname -s)" == "Linux" ]] || fail "runs on Linux agents only, not $(uname -s)"
-  case "${STEP}" in
-    enter | generate | fail | seal) ;;
-    *) fail "option step must be enter, generate, fail or seal, got '${STEP}'" ;;
-  esac
-  local python3
-  python3="$(find_python3)"
-  [[ -n "${python3}" ]] || fail "needs Python 3.9 or later on the agent"
-  ensure_venv "${python3}"
-  echo "--- :camera_with_flash: snapshot ${STEP}"
-  # The generator gets the job's own PYTHONPATH back (snapdep.agent.generator_env).
-  SNAPDEP_JOB_PYTHONPATH="${PYTHONPATH:-}" PYTHONPATH="${PLUGIN_DIR}/lib" \
-    exec "${VENV_DIR}/bin/python" -m snapdep "${STEP}"
-}
-
-if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
-  main
-fi
+# shellcheck source=../lib/hook.bash
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/lib/hook.bash"
+main

@@ -1,7 +1,9 @@
 """hooks/command under bash: the choice of Python and the placement of the virtualenv.
 
-The hook is copied into a temporary plugin directory and sourced, which defines
-its functions without running ``main``; each test calls one function.
+The hook and its functions (``lib/hook.bash``) are copied into a temporary
+plugin directory. The function library is sourced, which defines the
+functions without running ``main``; each test calls one function. The hook
+itself is sourced the way the agent's hook wrapper does it.
 """
 
 from __future__ import annotations
@@ -14,19 +16,22 @@ from pathlib import Path
 
 import pytest
 
-HOOK = Path(__file__).parent.parent / "hooks" / "command"
+REPO = Path(__file__).parent.parent
+HOOK = Path("hooks") / "command"
+FUNCTIONS = Path("lib") / "hook.bash"
 
 
 @pytest.fixture
 def plugin(tmp_path):
-    (tmp_path / "hooks").mkdir()
-    shutil.copy(HOOK, tmp_path / "hooks" / "command")
+    for f in (HOOK, FUNCTIONS):
+        (tmp_path / f.parent).mkdir(exist_ok=True)
+        shutil.copy(REPO / f, tmp_path / f)
     return tmp_path
 
 
 def run_hook(plugin: Path, script: str, env: dict[str, str] | None = None):
-    """Source the hook in ``plugin`` and run ``script`` after it."""
-    hook = plugin / "hooks" / "command"
+    """Source the hook's functions in ``plugin`` and run ``script`` after them."""
+    hook = plugin / FUNCTIONS
     return subprocess.run(
         ["bash", "-c", f'source "{hook}"; {script}'],
         env={"PATH": os.environ["PATH"], **(env or {})},
@@ -52,6 +57,26 @@ def test_find_python3_checks_the_agent_python_version(plugin, tmp_path):
     assert r.stdout.strip() == "python3", "a Python older than 3.9 is skipped"
     r = run_hook(plugin, "find_python3", {"QDB_CICD_AGENT_PYTHON3": sys.executable})
     assert r.stdout.strip() == sys.executable
+
+
+def test_the_hook_runs_its_step_when_the_agent_sources_it(plugin):
+    """The agent's hook wrapper sources hooks/command; the hook must still run.
+
+    Without a valid step it fails with its own message. Before the fix the
+    sourced hook defined its functions, ran nothing and exited 0, so enter
+    passed without uploading anything (qdb-api-go build 446).
+    """
+    hook = plugin / HOOK
+    wrapper = f'. "{hook}"\nexport -p > /dev/null\n'
+    r = subprocess.run(
+        ["bash", "-c", wrapper],
+        env={"PATH": os.environ["PATH"], "BUILDKITE_PLUGIN_QDB_SNAPSHOT_STEP": ""},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert r.returncode == 1, r.stdout + r.stderr
+    assert "qdb-snapshot:" in r.stdout
 
 
 def make_venv(d: Path, marker: bool) -> Path:

@@ -115,7 +115,9 @@ that a retry of the job does not upload them again.
 
 - `plugin.yml`, `hooks/command`: the Buildkite plugin. The hook creates a
   virtualenv inside the plugin directory and runs `python -m snapdep <step>`.
-  Linux agents only.
+  Linux agents only. Its functions are in `lib/hook.bash`: the agent sources
+  hooks through a wrapper, so the hook itself only sources them and calls
+  `main`.
 - `lib/snapdep/`: the Python package (Python 3.9 or later); `python -m snapdep`.
 - `examples/`: the bootstrap and the shim an adopting repository copies.
 - `tests/`: pytest, without network. `tests/fixtures/` holds the shape of real
