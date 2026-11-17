@@ -1,0 +1,67 @@
+#!/usr/bin/env bash
+# The command of a snapshot gate job: python -m snapdep <step>.
+#
+# Creates a virtualenv inside the plugin directory once per plugin checkout
+# (lib/requirements.txt), then runs the step given by the plugin option
+# `step` in the build's checkout. Linux only: the gate jobs run on the
+# default queue.
+set -euo pipefail
+
+PLUGIN_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+VENV_DIR="${PLUGIN_DIR}/.venv"
+READY="${VENV_DIR}/.snapdep-ready"
+REQUIREMENTS="${PLUGIN_DIR}/lib/requirements.txt"
+STEP="${BUILDKITE_PLUGIN_QDB_SNAPSHOT_STEP:-}"
+
+fail() {
+  echo "+++ :rotating_light: qdb-snapshot: $*"
+  exit 1
+}
+
+# Python 3.9 or later, found the way the qdb-artifacts plugin finds python3:
+# the agent's QDB_CICD_AGENT_PYTHON3 first, then python3 or python on PATH.
+find_python3() {
+  local check="import sys; sys.exit(0 if sys.version_info >= (3, 9) else 1)"
+  if [[ -n "${QDB_CICD_AGENT_PYTHON3:-}" ]] && [[ -x "${QDB_CICD_AGENT_PYTHON3}" ]]; then
+    echo "${QDB_CICD_AGENT_PYTHON3}"
+    return
+  fi
+  for cmd in python3 python; do
+    if command -v "${cmd}" &>/dev/null && "${cmd}" -c "${check}" 2>/dev/null; then
+      echo "${cmd}"
+      return
+    fi
+  done
+}
+
+# Build the virtualenv next to the final place and move it in, so that two
+# jobs on one host never see a half-installed one.
+ensure_venv() {
+  local python3="$1"
+  [[ -f "${READY}" ]] && return
+  [[ -d "${VENV_DIR}" ]] && rm -rf "${VENV_DIR}"
+  local tmp
+  tmp="$(mktemp -d "${PLUGIN_DIR}/.venv-XXXXXX")"
+  echo "~~~ :python: Setting up the qdb-snapshot plugin"
+  "${python3}" -m venv "${tmp}"
+  "${tmp}/bin/python" -m pip install --quiet --retries 3 -r "${REQUIREMENTS}"
+  touch "${tmp}/.snapdep-ready"
+  mv -T "${tmp}" "${VENV_DIR}" 2>/dev/null || rm -rf "${tmp}"
+  [[ -f "${READY}" ]] || fail "could not set up ${VENV_DIR}"
+}
+
+main() {
+  [[ "$(uname -s)" == "Linux" ]] || fail "runs on Linux agents only, not $(uname -s)"
+  case "${STEP}" in
+    enter | generate | fail | seal) ;;
+    *) fail "option step must be enter, generate, fail or seal, got '${STEP}'" ;;
+  esac
+  local python3
+  python3="$(find_python3)"
+  [[ -n "${python3}" ]] || fail "needs Python 3.9 or later on the agent"
+  ensure_venv "${python3}"
+  echo "--- :camera_with_flash: snapshot ${STEP}"
+  PYTHONPATH="${PLUGIN_DIR}/lib" exec "${VENV_DIR}/bin/python" -m snapdep "${STEP}"
+}
+
+main
