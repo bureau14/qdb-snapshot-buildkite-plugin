@@ -13,7 +13,9 @@ and from the build meta-data written by earlier jobs of the same build:
 - ``snapdep-key``, ``snapdep-plan``: the own key and the plan id, set by enter
   in build mode;
 - ``snapdep-gate-keys``: JSON list of the steps that must pass, set when the
-  real pipeline is uploaded.
+  real pipeline is uploaded;
+- ``snapdep-uploaded-enter``, ``snapdep-uploaded-generate``: that job's
+  documents are in the build; a retry of the job uploads nothing.
 """
 
 from __future__ import annotations
