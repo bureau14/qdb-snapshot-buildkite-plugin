@@ -37,6 +37,17 @@ A dependency that failed fails the build that asked for it, with an annotation
 that follows the failure down the chain to the job that failed and says what to
 retry.
 
+Within one chain (one plan) a pipeline is built at most once. Every failure
+record names the plan its build ran under. When the same dependency is reached
+along two paths (a diamond: qdb-api-python needs quasardb-build directly and
+through qdb-api-rest) and its build failed, the second path does not build it
+again: the build that would trigger it fails at once with the same annotation,
+and a build of a key that already failed in its chain fails with a pointer to
+that build. A build that only stopped for a failed dependency did not build its
+own key, so a rebuild of it builds once the dependency is healed. A build that
+carries `SNAPDEP_REBUILD` still builds its own key; `SNAPDEP_REBUILD=all` does
+not build a failed key a second time either.
+
 ## Adopting a repository
 
 1. Write `.buildkite/snapshot.yml`:
