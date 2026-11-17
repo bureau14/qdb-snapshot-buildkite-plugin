@@ -47,9 +47,8 @@ def test_dependency_failure_follows_caused_by_down_to_the_failed_steps():
             "            FAILED in build 4250: https://ci/quasardb-build/4250",
             "              step build-windows: hard_failed",
             "",
-            "To retry: retry the failed job in quasardb-build 4250. When it passes, retry",
-            f'the step ":link: qdb-api-rest @ {short(REST)}" in this build. Everything that '
-            "passed is reused.",
+            "To retry: retry the failed job in quasardb-build 4250. When it passes,",
+            "rebuild this build. Everything that passed is reused.",
         ]
     )
 
@@ -59,9 +58,8 @@ def test_dependency_failure_without_a_failure_record():
     missing = [trace_missing(s, plan(), Cause(QDB, key(QDB)))]
     text = dependency_failure_text(REST, 77, missing)
     assert "no failure on record: its build was cancelled, was lost or did not run" in text
-    assert text.endswith(
-        f'To retry: retry the step ":link: quasardb-build @ {short(QDB)}" in this build.'
-    )
+    assert text.endswith("To retry: rebuild this build. Everything that passed is reused.")
+    assert "retry the step" not in text, "a retried trigger does not run generate again"
 
 
 def test_latest_failure_of_a_key_is_shown():

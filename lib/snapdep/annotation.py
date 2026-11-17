@@ -14,7 +14,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
-from .pipeline import short, trigger_label
+from .pipeline import short
 from .planner import dependencies_first
 from .records import Cause, Failure, Plan, Version, list_failures
 from .store import Store
@@ -137,14 +137,20 @@ def _builds_text(builds: Sequence[tuple[str, int]]) -> str:
     return " and ".join(f"{pipeline} {number}" for pipeline, number in builds)
 
 
-def retry_lines(m: Missing, step_label: str) -> list[str]:
-    """How a person heals the failure ``m`` behind trigger step ``step_label``."""
-    builds = failed_builds(m)
+def retry_lines(missing: Sequence[Missing]) -> list[str]:
+    """How a person heals a build whose dependencies ``missing`` have no version.
+
+    Not by retrying a step of this build: its generate job has ended, and a
+    retried trigger step would not run it again. The failed jobs below are
+    retried where they failed, then this build is built again; every version
+    sealed meanwhile is reused.
+    """
+    builds = list(dict.fromkeys(b for m in missing for b in failed_builds(m)))
     if not builds:
-        return [f'To retry: retry the step "{step_label}" in this build.']
+        return ["To retry: rebuild this build. Everything that passed is reused."]
     return [
-        f"To retry: retry the failed job in {_builds_text(builds)}. When it passes, retry",
-        f'the step "{step_label}" in this build. Everything that passed is reused.',
+        f"To retry: retry the failed job in {_builds_text(builds)}. When it passes,",
+        "rebuild this build. Everything that passed is reused.",
     ]
 
 
@@ -161,8 +167,7 @@ def dependency_failure_text(project: str, build_number: int, missing: Sequence[M
     for m in missing:
         lines.append(f"  {_subject(m)} has no version.")
         lines += failure_lines(m, 4)
-    for m in missing:
-        lines += ["", *retry_lines(m, trigger_label(m.project, m.commit))]
+    lines += ["", *retry_lines(missing)]
     return "\n".join(lines)
 
 
