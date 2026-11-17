@@ -150,6 +150,18 @@ def test_failures_listed_oldest_first():
     assert list_failures(s, "p", "v1-none") == []
 
 
+def test_a_rewritten_failure_keeps_its_first_time():
+    s = MemoryStore()
+    write_failure(s, failure_record("p", "v1-k", build(), [FailedStep("x", "failed")], [], T0))
+    again = failure_record("p", "v1-k", build(), [FailedStep("y", "failed")], [], T0 + 300)
+    write_failure(s, again)
+    (stored,) = list_failures(s, "p", "v1-k")
+    assert stored.failed_steps == (FailedStep("y", "failed"),)
+    assert stored.recorded_at == T0
+    first = failure_record("p", "v1-k", build(), [], [], T0)
+    assert stored.recorded_at_iso == first.recorded_at_iso
+
+
 def test_holder_and_disabled():
     s = MemoryStore()
     write_holder(s, holder_record("p", "v1-k", "plan", build(), T0))

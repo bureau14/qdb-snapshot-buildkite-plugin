@@ -18,7 +18,7 @@ from __future__ import annotations
 import datetime
 import json
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 from .canonical import canonical_json
@@ -501,8 +501,18 @@ def record_version(s: Store, v: Version, force: bool = False) -> Version:
 
 
 def write_failure(s: Store, f: Failure) -> None:
-    """Store failure record ``f`` (one per build and key; a rewrite replaces it)."""
-    s.put(failure_path(f.project, f.key, f.build.uuid), encode(failure_to_dict(f)))
+    """Store failure record ``f`` (one per build and key).
+
+    A rewrite (a retried job) replaces the record but keeps the time it was
+    first recorded, so that a build that arrived in between is not taken for
+    one that waited behind this failure.
+    """
+    path = failure_path(f.project, f.key, f.build.uuid)
+    o = s.get(path)
+    if o is not None:
+        first = failure_from_dict(decode(o.body, path), path)
+        f = replace(f, recorded_at=first.recorded_at, recorded_at_iso=first.recorded_at_iso)
+    s.put(path, encode(failure_to_dict(f)))
 
 
 def list_failures(s: Store, project: str, key: str) -> list[Failure]:

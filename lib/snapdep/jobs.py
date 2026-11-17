@@ -106,6 +106,11 @@ PASSED = "passed"
 SOFT_FAILED = "soft_failed"
 NO_MANIFEST = "no manifest"  # outcome of a produced variant that seal did not find
 
+# Seconds of clock difference allowed between the agent that recorded a
+# build's arrival and the agent that recorded a failure. A failure inside the
+# margin is not taken as shared: the build builds again, which is always safe.
+CLOCK_SKEW = 5.0
+
 
 class JobError(RuntimeError):
     """A job cannot run in this build as it is."""
@@ -276,23 +281,40 @@ def only_soft_failed(f: Failure) -> bool:
     return bool(f.failed_steps) and all(s.outcome == SOFT_FAILED for s in f.failed_steps)
 
 
+def failures_of_others(failures: Sequence[Failure], own_build: str) -> list[Failure]:
+    """The failures of other builds that failed (not only soft-failed), in order."""
+    return [f for f in failures if f.build.uuid != own_build and not only_soft_failed(f)]
+
+
 def shared_failure(
     failures: Sequence[Failure], arrived: float | None, own_build: str
 ) -> Failure | None:
     """The failure of the build this one waited behind at the gate, if there is one.
 
-    The latest failure of another build recorded after this build arrived.
-    ``failures`` are oldest first. Without an arrival time there is none. A
-    record whose failed steps all soft-failed is not one: that build passed.
+    The latest failure of another build recorded more than ``CLOCK_SKEW``
+    seconds after this build arrived (the two times come from the clocks of
+    two agents). ``failures`` are oldest first. Without an arrival time there
+    is none. A record whose failed steps all soft-failed is not one: that
+    build passed.
     """
     if arrived is None:
         return None
-    later = [
-        f
-        for f in failures
-        if f.recorded_at > arrived and f.build.uuid != own_build and not only_soft_failed(f)
-    ]
+    others = failures_of_others(failures, own_build)
+    later = [f for f in others if f.recorded_at > arrived + CLOCK_SKEW]
     return later[-1] if later else None
+
+
+def near_arrival(
+    failures: Sequence[Failure], arrived: float | None, own_build: str
+) -> list[Failure]:
+    """Failures recorded after ``arrived`` but within ``CLOCK_SKEW``: not taken as shared."""
+    if arrived is None:
+        return []
+    return [
+        f
+        for f in failures_of_others(failures, own_build)
+        if arrived < f.recorded_at <= arrived + CLOCK_SKEW
+    ]
 
 
 def parse_arrived(v: str | None) -> float | None:
@@ -546,7 +568,13 @@ def enter(job: Job, read: DeclarationSource, fx: Effects) -> int:
     arrived = parse_arrived(fx.agent.meta_data_get(ARRIVED))
     if arrived is None:
         fx.log(f"meta-data {ARRIVED} is not set: is the shim in pipeline.py?")
-    failed = shared_failure(list_failures(fx.store, job.project, own.key), arrived, job.build.uuid)
+    failures = list_failures(fx.store, job.project, own.key)
+    for f in near_arrival(failures, arrived, job.build.uuid):
+        fx.log(
+            f"build {f.build.number} failed {f.recorded_at - (arrived or 0):.1f} s after this "
+            f"build arrived, within the {CLOCK_SKEW:.0f} s clock margin: building again"
+        )
+    failed = shared_failure(failures, arrived, job.build.uuid)
     if failed is not None:
         note = notes.shared_failure_text(notes.trace_failure(fx.store, plan, failed))
         fx.agent.annotate(notes.preformatted(note), "error", notes.CONTEXT)

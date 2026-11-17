@@ -313,7 +313,7 @@ def test_enter_reuses_an_existing_version():
 
 def test_enter_fails_with_the_failure_of_the_build_it_waited_behind():
     other = build(REST, 76, "uuid-rest-76")
-    f = failed(REST, key(REST), other, {"build-linux-haswell": "hard_failed"}, at=ARRIVED_AT + 1)
+    f = failed(REST, key(REST), other, {"build-linux-haswell": "hard_failed"}, at=ARRIVED_AT + 6)
     w = World()
     write_failure(w.store, f)
     assert run(enter, w) == 1
@@ -332,6 +332,16 @@ def test_enter_ignores_a_failure_from_before_it_arrived():
     write_failure(w.store, failed(REST, key(REST), other, {"x": "hard_failed"}, at=ARRIVED_AT - 1))
     assert run(enter, w) == 0
     assert w.agent.meta_data[MODE] == "build"
+
+
+def test_enter_builds_when_a_failure_is_within_the_clock_margin_of_arrival():
+    other = build(REST, 76, "uuid-rest-76")
+    p = plan()
+    w = World(store=stored_versions(version(p, DUCK, 5), version(p, QDB, 9)))
+    write_failure(w.store, failed(REST, key(REST), other, {"x": "hard_failed"}, at=ARRIVED_AT + 2))
+    assert run(enter, w) == 0
+    assert w.agent.meta_data[MODE] == "build"
+    assert any("within the 5 s clock margin" in m for m in w.logs)
 
 
 def test_enter_without_arrival_time_builds_and_says_so():
