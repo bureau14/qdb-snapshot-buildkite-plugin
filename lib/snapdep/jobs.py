@@ -104,6 +104,7 @@ BUILD = "build"
 REBUILD_SELF = "1"
 PASSED = "passed"
 SOFT_FAILED = "soft_failed"
+NO_MANIFEST = "no manifest"  # outcome of a produced variant that seal did not find
 
 
 class JobError(RuntimeError):
@@ -661,6 +662,12 @@ def seal(job: Job, read: DeclarationSource, fx: Effects) -> int:
         raise JobError(f"meta-data {KEY}={key} but the plan has {own.key}")
     absent = missing_variants(fx.store, job, own.label, entry.produces)
     if absent:
+        missing = [FailedStep(f"variant {a}", NO_MANIFEST) for a in absent]
+        f = failure_record(job.project, key, job.build, missing, [], fx.clock())
+        write_failure(fx.store, f)
+        fx.agent.annotate(
+            notes.preformatted(notes.failed_steps_text(job.project, key, f)), "error", notes.CONTEXT
+        )
         raise JobError(f"not a version: no manifest of {', '.join(absent)} in this build")
     deps = {d: plan.nodes[d].key for d in own.deps}
     v = version_record(job.project, own, deps, job.build, gates, fx.clock())

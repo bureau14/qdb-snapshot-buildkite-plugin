@@ -733,6 +733,11 @@ def test_seal_checks_produced_variants():
     with pytest.raises(JobError, match="no manifest of linux-haswell-release"):
         run(seal, w, decl)
     assert sealed(w) is None
+    (f,) = list_failures(w.store, REST, key(REST))
+    assert [(s.key, s.outcome) for s in f.failed_steps] == [
+        ("variant linux-haswell-release", "no manifest")
+    ]
+    assert "variant linux-haswell-release: no manifest" in w.agent.annotations[-1][0]
     manifest = (
         f"{REST}/refs/heads/master/variants/linux-haswell-release/builds/"
         f"{REST_BUILD.uuid}/manifest.json"
